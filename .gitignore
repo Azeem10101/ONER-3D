@@ -39,3 +39,14 @@ yarn-error.log*
 # typescript
 *.tsbuildinfo
 next-env.d.ts
+
+# ---------------------------------------------------------------------------
+# 3D assets — see README "Replacing the placeholders"
+# Binary .glb files do not diff or merge well. Preferred options, in order:
+#   1. Commit the source scene (Spline project link in the README) and export
+#      the .glb in CI or at build time.
+#   2. Use Git LFS.
+# Until one of those is set up, uncomment the line below to keep the repo
+# light. The experience runs without them; the scene falls back to the
+# procedural placeholders.
+/public/models/*.glb
