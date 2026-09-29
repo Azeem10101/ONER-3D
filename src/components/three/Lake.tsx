@@ -2,7 +2,7 @@
 
 import { useMemo, useRef } from "react";
 import { useFrame } from "@react-three/fiber";
-import { BufferAttribute, BufferGeometry, Color, FogExp2, Vector3, BackSide, type Mesh, type Points } from "three";
+import { BufferAttribute, BufferGeometry, Color, Vector3, BackSide, type Mesh, type Points } from "three";
 import { WORLD } from "@/scene/world";
 import { SUN_DIRECTION } from "@/scene/sun";
 import { FOG_COLOR, FOG_DENSITY } from "./Lighting";
@@ -264,15 +264,19 @@ const fragmentShader = /* glsl */ `
 
     // --- Fresnel ---------------------------------------------------------
     float ndv = max(dot(normal, viewDir), 0.0);
-    // Schlick with F0 floored at 0.10 rather than the physical 0.02.
+    // Schlick with F0 floored at 0.22 rather than the physical 0.02.
     //
     // This floor is a fudge, and worth being honest about. Strict Schlick at
     // this viewing angle gives ~0.02, which is physically right and visually
-    // useless. Real water is not a perfect dielectric — surface roughness and
-    // sub-pixel capillary waves scatter far more than a smooth Fresnel term
-    // predicts — so effective reflectance from above genuinely is higher than
-    // 2%.
-    float fresnel = 0.10 + 0.90 * pow(1.0 - ndv, 4.0);
+    // useless: a lake reflecting 2% of the sky from above looks like a sheet of
+    // coloured glass, not like water.
+    //
+    // Real water is not a smooth dielectric. Surface roughness, sub-pixel
+    // capillary waves and a slightly turbid body all scatter far more than a
+    // smooth Fresnel term predicts, and 0.22 is within the range real lakes
+    // show at moderate viewing angles. The previous 0.10 was halfway to
+    // nowhere — defensible, but not enough to read as a reflective surface.
+    float fresnel = 0.22 + 0.78 * pow(1.0 - ndv, 4.0);
 
     // --- Depth: shallower near the shore ---------------------------------
     // Shoreline distance uses the lake centre, passed in as a uniform rather
@@ -367,22 +371,25 @@ const fragmentShader = /* glsl */ `
     // behaving like a mirror well before its colour has fully changed. Seeing
     // the reflection die before the colour arrives is what makes the pollution
     // read as a process rather than a switch.
-    color = mix(color, skyRefl, fresnel * 0.88 * uClarity);
+    color = mix(color, skyRefl, fresnel * 0.95 * uClarity);
 
     // --- Travelling wave crests -------------------------------------------
-    // The most legible single cue that a surface is moving, and unlike
-    // fresnel it does not care about the viewing angle, so it works from
-    // directly overhead as well as from underwater.
+    // The most legible single cue that a surface is moving, and unlike fresnel
+    // it does not care about the viewing angle, so it works from directly
+    // overhead as well as from underwater.
     //
     // Derived from the height field itself, so a crest is by construction on a
-    // wave rather than painted on. hC is roughly in [-1, 1] and the band is
-    // narrow, so only the genuine peaks lighten.
-    float crest = smoothstep(0.30, 0.60, hC) * uClarity;
-    color += mix(vec3(0.55, 0.70, 0.74), uFoamColor, 0.35) * crest * 0.15;
+    // wave rather than painted on. The weight is higher than it looks like it
+    // should be because at this viewing distance the crests are the only
+    // high-frequency detail that survives — without them the surface is a smooth
+    // gradient of one colour, which is what "the water isn't visible" looks
+    // like even when the water is technically there.
+    float crest = smoothstep(0.22, 0.58, hC) * uClarity;
+    color += mix(vec3(0.62, 0.76, 0.80), uFoamColor, 0.4) * crest * 0.30;
 
     // Shadowed troughs, for the same reason: a wave is as legible by its dark
     // side as by its lit one.
-    color *= 1.0 - smoothstep(-0.26, -0.56, hC) * 0.17;
+    color *= 1.0 - smoothstep(-0.20, -0.54, hC) * 0.26;
 
     // --- Foam and scum -----------------------------------------------------
     // A bright ring hard against the outfall, where effluent is entering
@@ -963,10 +970,11 @@ export function UnderwaterVolume({ quality }: { quality: QualitySettings }) {
     []
   );
 
-  useFrame(({ clock, camera, scene, gl }) => {
-    // Submerged or not is a function of where the camera actually is.
-    const submerged = camera.position.y < -0.15;
-    const depth = submerged ? Math.min(1, -camera.position.y / 6) : 0;
+  useFrame(({ clock, camera, gl }) => {
+    // Submersion, ramped over 4m rather than switched at y = 0. Matches the
+    // ramp in <FogController> so the shafts, the particulate and the fog all
+    // arrive together instead of in sequence.
+    const depth = Math.min(1, Math.max(0, -camera.position.y) / 4);
 
     particleUniforms.set("uTime", clock.elapsedTime);
     particleUniforms.set("uSize", gl.domElement.height * 0.012);
@@ -980,15 +988,18 @@ export function UnderwaterVolume({ quality }: { quality: QualitySettings }) {
       shaftMesh.current.position.copy(camera.position);
     }
 
-    // Swap the scene fog while submerged. Restored to the scene default when
-    // the camera comes back up, so the aerial view is unaffected.
-    if (submerged) {
-      // Blue at the surface, green with depth. Water absorbs red first, so
-      // this is the physically-motivated direction of the shift.
-      scene.fog = underwaterFog(depth);
-    } else if (scene.fog instanceof FogExp2 && scene.fog.density < 0.01) {
-      scene.fog = surfaceFog();
-    }
+    // NOTE: the scene fog is NOT touched here.
+    //
+    // It used to be, and it was the cause of a bug that survived the entire
+    // reverse journey: scrolling back up out of the lake left the jungle
+    // blue-green all the way to the bird's-eye. The restore condition was
+    // inverted (it only fired when density < 0.01, but the underwater fog sits
+    // at 0.075-0.175, so it never fired at all), and the "restore" allocated a
+    // new object rather than mutating the existing one, leaving stale
+    // references behind in the tree material.
+    //
+    // <FogController> now owns a single FogExp2 and writes into it every frame.
+    // See the comment there for the full account.
   });
 
   return (
@@ -1091,23 +1102,7 @@ export function UnderwaterVolume({ quality }: { quality: QualitySettings }) {
   );
 }
 
-/** Underwater fog, recreated per frame because its colour depends on depth. */
-let _underwater: FogExp2 | null = null;
-function underwaterFog(depth: number): FogExp2 {
-  if (!_underwater) _underwater = new FogExp2(new Color("#2e6d78"), 0.16);
-  // Blue near the surface, green as it gets deeper.
-  const color = _underwater.color;
-  color.setRGB(0.18 - depth * 0.09, 0.42 - depth * 0.05, 0.47 + depth * 0.06);
-  // Visibility collapses quickly — real lake water is opaque within a few tens
-  // of metres, and that short range is what gives the shot its claustrophobic
-  // quality.
-  _underwater.density = 0.075 + depth * 0.10;
-  return _underwater;
-}
-
-/** The scene's normal aerial fog, used whenever the camera is above water. */
-let _surface: FogExp2 | null = null;
-function surfaceFog(): FogExp2 {
-  if (!_surface) _surface = new FogExp2(new Color(FOG_COLOR), FOG_DENSITY);
-  return _surface;
-}
+// The scene's fog is owned by <FogController> and is never swapped from here.
+// This file used to define both an underwater fog and a surface fog and install
+// them into `scene.fog` on the way in and out of the water; that swap is what
+// left the jungle looking submerged for the rest of the reverse journey.

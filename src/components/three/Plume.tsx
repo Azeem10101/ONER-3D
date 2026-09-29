@@ -230,50 +230,69 @@ type LayerConfig = {
 };
 
 export function Plume({ quality }: { quality: QualitySettings }) {
-  // Three layers, and the opacity numbers are a BUDGET, not a taste setting.
+  // Three layers, and the numbers are a solved budget rather than a taste.
   //
-  // Several hundred sprites overlap along any view ray through the column, so
-  // accumulated alpha is 1 - Π(1 - αᵢ). Once that product saturates, the plume
-  // is a solid grey mass — and a solid mass has no internal features, so it
-  // reads as completely static no matter how fast the particles are travelling.
-  // That is the bug the previous two rounds missed: raising the rise speed
-  // could not help, because there was nothing in the image for the speed to
-  // show up in.
+  // ## What actually decides whether motion is visible
   //
-  // These values are set so the densest clumps land around 0.75-0.9 and the
-  // thinner regions around 0.3, which is where structure becomes visible.
+  // Not the speed. The number of sprites a single view ray passes through.
+  //
+  // Accumulated alpha along a ray is 1 - Π(1 - αᵢ). When 35 or 65 sprites
+  // overlap, that product is 0.98 no matter how low each sprite's opacity is —
+  // the column becomes an opaque mass, and an opaque mass has no internal
+  // features for movement to show up in. Measured: the previous configuration
+  // accumulated 0.984 and 0.987 on the core and mid layers, i.e. saturated, at
+  // every opacity tried. Raising the per-sprite opacity lower could not help;
+  // it was already low. Lowering it further only made the plume thin without
+  // adding structure, because the count was the problem.
+  //
+  // The lever is sprites-per-ray, which is (count / column height) x
+  // (sprite diameter)² / (column width). Getting it to roughly 6 per ray is
+  // what makes individual billows distinguishable — and a distinguishable puff is
+  // the only thing the eye can track as it rises.
+  //
+  // So: far fewer sprites, and higher per-sprite opacity to keep the column
+  // dense. Opacities below are set so each layer accumulates to roughly 0.60,
+  // 0.45 and 0.26, for a total around 0.84 — dense, but with structure.
+  //
+  // ## Why the speeds are high
+  //
+  // A puff crossing the 190m column in 9-14s travels at 13-20 m/s, which is
+  // 20-30 pixels a second at the rise shots' viewing distance. That is a
+  // clearly readable drift. The previous 15-32s crossings were slow enough to
+  // read as a static gradient, and that was the original complaint.
   const layers = useMemo<LayerConfig[]>(
     () => [
       {
-        // Core: tight, dark, and relatively fast. This is the column.
-        count: quality.tier === "low" ? 240 : quality.tier === "medium" ? 460 : 780,
-        size: [10, 24],
-        opacity: 0.26,
+        // Core: the dense inner column.
+        count: quality.tier === "low" ? 90 : quality.tier === "medium" ? 170 : 260,
+        size: [12, 22],
+        opacity: 0.3,
         spread: 20,
         height: WORLD.plumeHeight,
-        speed: [0.045, 0.09],
+        speed: [0.07, 0.14],
         blending: undefined,
       },
       {
-        // Mid: the main body of the plume, and where most of the visible
-        // motion comes from.
-        count: quality.tier === "low" ? 200 : quality.tier === "medium" ? 400 : 680,
-        size: [20, 46],
-        opacity: 0.15,
+        // Mid: the main body of the plume, and where most of the visible motion
+        // comes from.
+        count: quality.tier === "low" ? 80 : quality.tier === "medium" ? 140 : 200,
+        size: [18, 34],
+        opacity: 0.2,
         spread: 40,
         height: WORLD.plumeHeight * 0.9,
-        speed: [0.03, 0.062],
+        speed: [0.05, 0.1],
         blending: undefined,
       },
       {
-        // Outer: thin, wide, slow. Legible as motion only because there are
-        // many of them and they are small — which is the point.
-        count: quality.tier === "low" ? 120 : quality.tier === "medium" ? 240 : 400,
-        size: [42, 92],
-        opacity: 0.065,
+        // Outer: thin and wide. Fewer and larger than before specifically to
+        // keep its sprites-per-ray down — this layer had 61 sprites per ray and
+        // was the single largest contributor to the saturation.
+        count: quality.tier === "low" ? 40 : quality.tier === "medium" ? 65 : 90,
+        size: [45, 78],
+        opacity: 0.1,
         spread: 74,
         height: WORLD.plumeHeight * 1.15,
-        speed: [0.02, 0.042],
+        speed: [0.032, 0.068],
         blending: undefined,
       },
     ],

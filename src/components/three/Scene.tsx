@@ -5,7 +5,8 @@ import { Canvas } from "@react-three/fiber";
 import { AdaptiveQuality, useQuality } from "./QualityGate";
 import { CameraRig } from "./CameraRig";
 import { SkyDome } from "./Sky";
-import { Lighting, FOG_COLOR, FOG_DENSITY } from "./Lighting";
+import { Lighting } from "./Lighting";
+import { FogController } from "./FogController";
 import { Environment } from "./Environment";
 import { StatsReader } from "@/components/dev/statsBus";
 import { ACESFilmicToneMapping, PCFSoftShadowMap } from "three";
@@ -27,7 +28,20 @@ function SceneContents() {
         actually accumulates along a sight line, and never produces the hard
         "wall of fog" edge that linear fog shows near its far plane.
       */}
-      <fogExp2 attach="fog" args={[FOG_COLOR, FOG_DENSITY]} />
+      {/*
+        NOT `<fogExp2 attach="fog">`.
+
+        <FogController> owns a single FogExp2 for the lifetime of the page and
+        writes into it every frame, so it can blend between aerial haze and
+        underwater murk continuously as the camera crosses the waterline. A JSX
+        fog element cannot do that: it constructs its own instance from
+        constructor args and nothing can reach in to change it afterwards.
+
+        The previous arrangement — a fogExp2 element plus a component that
+        reassigned `scene.fog` on the way in and out of the lake — was the cause
+        of the jungle staying blue-green for the whole reverse journey.
+      */}
+      <FogController />
 
       <SkyDome />
       <Lighting quality={settings} />

@@ -71,6 +71,75 @@ const EASINGS: Record<EaseName, (t: number) => number> = {
   inOutQuint: (t) => (t < 0.5 ? 16 * t * t * t * t * t : 1 - Math.pow(-2 * t + 2, 5) / 2),
 };
 
+/**
+ * A curve with independently specified SPEED at each end.
+ *
+ * A cubic Hermite in speed space: f(0) = 0, f(1) = 1, and f'(0) and f'(1) are
+ * free parameters rather than consequences of the position constraint.
+ *
+ * ## The problem
+ *
+ * A shot is a straight line from A to B over a span of scroll, so its average
+ * speed is fixed by the author: length over span. Two adjacent shots rarely
+ * cruise at the same speed — across this journey they differ by up to 5x — and
+ * whatever easing is applied, the camera has to arrive at the seam at one speed
+ * and leave it at another. Three schemes were tried here and all three failed:
+ *
+ *   1. A NAMED EASING CURVE (inOutSine and friends). Every one of them is a
+ *      smoothstep, so every one has zero velocity at BOTH ends. Applied
+ *      per-shot, that stops the camera dead at all fifteen seams.
+ *
+ *   2. THE MIRROR OF A SMOOTHSTEP, used as a second curve. A mirror of
+ *      inOutSine about (0.5, 0.5) is also a smoothstep, and also at rest at both
+ *      ends. This moved the stop-start from the middle of each shot to its edges
+ *      without removing a single one.
+ *
+ *   3. ALTERNATING those two across the shots, so each seam is either a shared
+ *      pause or a shared cruise. Pausing at all fifteen seams stutters; cruising
+ *      at all fifteen produces a velocity STEP at each, because a shot cruising
+ *      at 3100 m per unit of scroll followed by one cruising at 900 hands over
+ *      at 3100 and leaves at 900. Form is not continuity.
+ *
+ * ## The insight
+ *
+ * Scheme 3 fails for a specific reason. The curve is being asked to hit a
+ * particular POSITION, which fixes its average speed, AND to have a particular
+ * speed at its ends, which it can only achieve by surging or hesitating
+ * somewhere in the middle. Those two requirements are not independent, so no
+ * single curve can satisfy both — which is why every attempt above ended up
+ * trading one artefact for another.
+ *
+ * They become independent in speed space. With the two endpoint SLOPES free, the
+ * behaviour through the middle falls out of the geometry rather than being an
+ * error at the seam. A surge through the middle of a shot reads as a deliberate
+ * move; a step at a boundary reads as a fault.
+ *
+ * ## Why the seams are then continuous by construction
+ *
+ * Give every shot the same seam speed and continuity stops being something to
+ * verify afterwards and becomes something that cannot fail. See CURVES below.
+ *
+ * The eye is far more sensitive to a change in acceleration than to a change in
+ * position, which is why any of this matters at all: the positions along the
+ * path were continuous throughout, and a position-delta check cannot see this
+ * class of fault. check-motion.ts measures it directly, by comparing the speed a
+ * few thousandths either side of every seam against the local cruising speed.
+ *
+ * @param a0 Speed at t=0, in units of the shot's own average.
+ * @param a1 Speed at t=1, in the same units.
+ */
+function hermite(a0: number, a1: number): (t: number) => number {
+  return (t) => {
+    if (t <= 0) return 0;
+    if (t >= 1) return 1;
+    const t2 = t * t;
+    const t3 = t2 * t;
+    // Cubic Hermite basis: endpoint positions fixed at 0 and 1, endpoint slopes
+    // supplied as a0 and a1.
+    return (t3 - 2 * t2 + t) * a0 + (-2 * t3 + 3 * t2) + (t3 - t2) * a1;
+  };
+}
+
 export function ease(name: EaseName, t: number) {
   return EASINGS[name](t);
 }
@@ -87,6 +156,20 @@ export const WORLD = {
   },
   get chimneyTop() {
     return WORLD_LAYOUT.chimneyTop;
+  },
+  /**
+   * The stack mouth in WORLD space — the point the plume leaves from, and the
+   * point the camera keyframes aim at.
+   *
+   * Distinct from `chimneyTop`, which is a LOCAL coordinate inside the factory
+   * group. That group is lifted onto the pad by `factoryPadHeight`, so the two
+   * differ by 22m in Y. Aiming at the local value puts the top of the stack low
+   * in frame, and it was also the source of a 36m target whip-pan at the 0.32
+   * boundary, where the arrival shot ended on y=44 and the first rise shot
+   * began on y=80.
+   */
+  get chimneyTopWorld() {
+    return WORLD_LAYOUT.chimneyTopWorld;
   },
 
   /** Lake surface. */
@@ -137,12 +220,25 @@ export type Shot = {
   target: readonly [Vec3, Vec3];
   /** Vertical field of view in degrees. Animating this reads as a zoom. */
   fov: readonly [number, number];
+  /**
+   * The shot's character, for authoring and for the debug HUD.
+   *
+   * NOT the curve actually used. `sampleCamera` picks from EASE_IN/EASE_OUT
+   * based on the shot's position in the journey, because every curve in
+   * EASINGS is a smoothstep and therefore has zero velocity at both ends —
+   * applied per-shot that stops the camera dead sixteen times over the
+   * journey. See the note beside EASE_IN. Retained because it documents what
+   * each shot is *for*, which the automatic rule cannot know.
+   */
   ease: EaseName;
   /** Content card that fades in and out across this shot's range. */
   card?: CardId;
   /** Short label for the debug HUD and for authoring. */
   label: string;
 };
+
+/** A shot plus its position in the journey, which the easing rule needs. */
+export type IndexedShot = Shot & { index: number };
 
 /**
  * The camera journey. Ranges are contiguous and cover 0 -> 1 with no gaps,
@@ -167,8 +263,8 @@ export const SHOTS: readonly Shot[] = [
     // frame the way the reference frames do.
     id: "overview",
     label: "Bird's eye - nature, industry, and the cost of both",
-    from: 0.0,
-    to: 0.08,
+    from: 0.0000,
+    to: 0.0824,
     position: [
       [-432, 318, 742],
       [-352, 248, 604],
@@ -186,8 +282,8 @@ export const SHOTS: readonly Shot[] = [
   {
     id: "approach",
     label: "Descending toward the plant",
-    from: 0.08,
-    to: 0.2,
+    from: 0.0824,
+    to: 0.2287,
     position: [
       [-352, 248, 604],
       [-136, 104, 232],
@@ -204,15 +300,30 @@ export const SHOTS: readonly Shot[] = [
     // against the real chimney position, not a placeholder.
     id: "chimney",
     label: "Arriving at the smoke source",
-    from: 0.2,
-    to: 0.32,
+    from: 0.2287,
+    to: 0.3233,
     position: [
       [-136, 104, 232],
-      [4, 62, 66],
+      // BELOW the stack mouth, so the camera arrives looking up the column
+      // rather than down at the source.
+      //
+      // Ending level with or above the mouth put the first rise shot's pitch on
+      // a path from -5 degrees through dead level to +13, so the camera started
+      // the climb tilted downward at the smoke and had to swing up through
+      // horizontal to follow it. check-scene.ts caught the dead-level crossing.
+      [4, 50, 62],
     ],
     target: [
-      [0, 18, 0],
-      [24, 44, -18],
+      [0, 30, 0],
+      // The stack MOUTH, in world space — not WORLD.chimneyTop, which is a LOCAL
+      // coordinate at y=44. The factory group is lifted onto the pad by
+      // factoryPadHeight, so the mouth the camera actually arrives at is 22m
+      // higher. Aiming at 44 put the top of the stack near the middle of the
+      // frame rather than the point the plume leaves from, and the mismatch was
+      // also the source of a 36m target whip-pan at the 0.32 boundary, where this
+      // shot's end target (y=44) met the next shot's start target from
+      // plumeAxisAt(80) (y=80).
+      WORLD.chimneyTopWorld,
     ],
     fov: [44, 40],
     ease: "inOutSine",
@@ -235,13 +346,15 @@ export const SHOTS: readonly Shot[] = [
   {
     id: "rise-co2",
     label: "Following the plume - CO2",
-    from: 0.32,
-    to: 0.42,
+    from: 0.3233,
+    to: 0.3563,
     position: [
-      [4, 62, 66],
+      [4, 50, 62],
       [26, 104, 58],
     ],
-    target: [plumeAxisAt(80), plumeAxisAt(122)],
+    // Starts on the stack mouth, which is exactly where the previous shot ended
+    // looking, so the handover has no target jump at all.
+    target: [plumeAxisAt(66), plumeAxisAt(122)],
     fov: [40, 42],
     ease: "inOutSine",
     card: "co2",
@@ -249,8 +362,8 @@ export const SHOTS: readonly Shot[] = [
   {
     id: "rise-co",
     label: "Following the plume - CO",
-    from: 0.42,
-    to: 0.51,
+    from: 0.3563,
+    to: 0.3933,
     position: [
       [26, 104, 58],
       [36, 148, 50],
@@ -263,8 +376,8 @@ export const SHOTS: readonly Shot[] = [
   {
     id: "rise-no2",
     label: "Following the plume - NO2",
-    from: 0.51,
-    to: 0.6,
+    from: 0.3933,
+    to: 0.4305,
     position: [
       [36, 148, 50],
       [48, 192, 42],
@@ -277,8 +390,8 @@ export const SHOTS: readonly Shot[] = [
   {
     id: "rise-so2",
     label: "Following the plume - SO2",
-    from: 0.6,
-    to: 0.69,
+    from: 0.4305,
+    to: 0.4639,
     position: [
       [48, 192, 42],
       [62, 228, 44],
@@ -299,8 +412,8 @@ export const SHOTS: readonly Shot[] = [
     // of the shot, so the camera stays below the top and looks up into it.
     id: "rise-pm25",
     label: "Following the plume - PM2.5",
-    from: 0.69,
-    to: 0.78,
+    from: 0.4639,
+    to: 0.4841,
     position: [
       [62, 228, 44],
       [72, 234, 56],
@@ -313,8 +426,8 @@ export const SHOTS: readonly Shot[] = [
   {
     id: "apex",
     label: "Topping out",
-    from: 0.78,
-    to: 0.82,
+    from: 0.4841,
+    to: 0.6024,
     position: [
       [72, 234, 56],
       [-96, 402, 268],
@@ -329,8 +442,8 @@ export const SHOTS: readonly Shot[] = [
   {
     id: "pullout",
     label: "Pulling back to the bird's eye",
-    from: 0.82,
-    to: 0.86,
+    from: 0.6024,
+    to: 0.7154,
     position: [
       [-96, 402, 268],
       [-288, 352, 486],
@@ -348,8 +461,8 @@ export const SHOTS: readonly Shot[] = [
     // it is composed to show clear water with life in it.
     id: "water-approach",
     label: "Swinging out over the lake",
-    from: 0.86,
-    to: 0.9,
+    from: 0.7154,
+    to: 0.8371,
     position: [
       [-288, 352, 486],
       [-246, 96, 276],
@@ -374,8 +487,8 @@ export const SHOTS: readonly Shot[] = [
     // it in frame — the shot that makes being underwater legible.
     id: "water-enter",
     label: "Entering the water — it is still clean",
-    from: 0.9,
-    to: 0.925,
+    from: 0.8371,
+    to: 0.9132,
     position: [
       [-246, 96, 276],
       // -2.2m, not -3.2m. The bowl's bed rises toward the shore, and at this
@@ -396,8 +509,8 @@ export const SHOTS: readonly Shot[] = [
     // to discolour, and the fish nearest the outfall begin to react.
     id: "water-discharge",
     label: "The discharge reaches the water",
-    from: 0.925,
-    to: 0.95,
+    from: 0.9132,
+    to: 0.9375,
     position: [
       [-186, -2.2, 176],
       [-172, -3.0, 158],
@@ -416,8 +529,8 @@ export const SHOTS: readonly Shot[] = [
     // near side and the clean far side at once — that contrast is the point.
     id: "water-spread",
     label: "It spreads — the fish flee toward clean water",
-    from: 0.95,
-    to: 0.975,
+    from: 0.9375,
+    to: 0.9636,
     position: [
       [-172, -3.6, 158],
       [-152, -4.2, 142],
@@ -436,8 +549,8 @@ export const SHOTS: readonly Shot[] = [
     // lower third of frame.
     id: "water-death",
     label: "There is nowhere clean left to go",
-    from: 0.975,
-    to: 0.992,
+    from: 0.9636,
+    to: 0.9878,
     position: [
       [-152, -4.2, 142],
       [-168, -5.0, 158],
@@ -460,8 +573,8 @@ export const SHOTS: readonly Shot[] = [
     // that matters, and clear of the bed everywhere in the frame.
     id: "outro",
     label: "Orion Manufacturing Plant",
-    from: 0.992,
-    to: 1.0,
+    from: 0.9878,
+    to: 1.0000,
     position: [
       [-168, -3.4, 158],
       [-172, -3.9, 164],
@@ -491,17 +604,132 @@ function lerp(a: number, b: number, t: number) {
   return a + (b - a) * t;
 }
 
+function easedParameter(shotIndex: number, t: number): number {
+  return CURVES[shotIndex](t);
+}
+
 function lerpVec(a: Vec3, b: Vec3, t: number): [number, number, number] {
   return [lerp(a[0], b[0], t), lerp(a[1], b[1], t), lerp(a[2], b[2], t)];
 }
 
-/** The shot containing a given progress value. Clamps at both ends. */
-export function shotAt(progress: number): Shot {
+/**
+ * The curve for each shot, resolved ONCE after the table exists.
+ *
+ * ## One shared cruise speed
+ *
+ * `V` is a single speed, in metres per unit of scroll, that the camera matches
+ * at EVERY seam in the journey. It is the geometric mean of the shots' own
+ * cruise speeds, which is the value that minimises how far any individual shot
+ * has to bend to reach it — and the geometric rather than the arithmetic mean
+ * because the ratios matter, not the absolute speeds.
+ *
+ * Each shot then gets a Hermite with both endpoints scaled to V: `a = V /
+ * cruise`, so a shot that naturally moves faster than V runs quickly through
+ * the middle and eases down to V at each end, and one that moves slower does
+ * the reverse. The journey starts and ends at rest — `a = 0` on the first and
+ * last shots — because beginning and settling are the two moments where coming
+ * to a stop is what the shot is for.
+ *
+ * ## Why this replaced the alternation scheme
+ *
+ * The previous approach paired EASE_IN with EASE_OUT shot by shot, so every
+ * seam was either a shared pause or a shared cruise. Pausing at all fifteen
+ * seams stutters; cruising at all fifteen seams produces a velocity step at
+ * each one, because the shots' own speeds differ by up to 5x. Fixing the seam
+ * speed directly sidesteps the choice entirely: there is no pairing to get
+ * wrong, no rule about which shots are arrivals, and no way for a future retime
+ * of one shot to silently break its neighbours.
+ *
+ * It is also far less code. The alternation, the arrival detection and the
+ * continuity ratio were all attempts to infer the seam speed; here it is simply
+ * stated.
+ *
+ * ## Why the clamp
+ *
+ * `a` above about 2.2 makes a Hermite cubic overshoot backwards. The camera
+ * would then travel the wrong way for part of a shot, which is a far worse
+ * artefact than the speed step this scheme exists to remove, and one no amount
+ * of smoothing elsewhere would hide. So the bend is capped and the residual
+ * step is accepted where it occurs — with the shot spans retimed to keep the
+ * remaining cases few and small.
+ *
+ * Declared after SHOTS rather than beside the curve definitions because it
+ * reads SHOTS, and module initialisation runs top to bottom: putting it earlier
+ * throws a TDZ error at import.
+ */
+const CURVES: readonly ((t: number) => number)[] = (() => {
+  /**
+   * The largest factor by which a shot may be bent to reach the shared cruise
+   * speed, as a multiple of its own average.
+   *
+   * 2.2 is where a cubic Hermite with equal endpoint slopes stops being
+   * monotonic and begins overshooting past 1 before returning — which would
+   * send the camera backwards through part of the shot. That is a far worse
+   * artefact than the speed step this scheme exists to remove, and one no
+   * amount of smoothing elsewhere would hide. So the bend is capped and the
+   * residual step is accepted where it occurs, with the shot spans retimed to
+   * keep the remaining cases few and small.
+   *
+   * Declared inside the IIFE rather than beside the other constants because it
+   * is only meaningful here, and because module-level consts initialise in
+   * source order — one declared below its use throws a TDZ error at import.
+   */
+  const MAX_BEND = 2.2;
+
+  const cruise = SHOTS.map((shot) => {
+    const length = Math.hypot(
+      shot.position[1][0] - shot.position[0][0],
+      shot.position[1][1] - shot.position[0][1],
+      shot.position[1][2] - shot.position[0][2]
+    );
+    const span = shot.to - shot.from;
+    return span > 0 ? length / span : 1;
+  });
+
+  // Geometric mean of the cruise speeds, skipping the two endpoint shots — the
+  // opening is nearly stationary and would drag the mean far below the speeds
+  // the camera actually travels at for most of the journey.
+  const interior = cruise.slice(1, -1);
+  const shared = Math.exp(
+    interior.reduce((acc, s) => acc + Math.log(Math.max(1, s)), 0) / interior.length
+  );
+
+  const clampA = (a: number) => Math.min(MAX_BEND, Math.max(0, a));
+
+  return SHOTS.map((_, index) => {
+    const a = clampA(shared / cruise[index]);
+    // The journey OPENS at rest — coming to a stop as the page loads is the
+    // shot's whole purpose, and a camera already travelling at the first frame
+    // reads as a cut that has already happened. It does not CLOSE at rest
+    // between shots 0 and 1 though: shot 0 hands on at the shared cruise like
+    // every other shot, and shot 1 departs at the same speed. Treating the
+    // opening shot as at-rest at both ends made the very first seam a step from
+    // nothing to full speed.
+    if (index === 0) return hermite(0, a);
+    // And the journey CLOSES at rest, for the same reason in reverse, but
+    // arrives there from the shared cruise rather than from a stop.
+    if (index === SHOTS.length - 1) return hermite(a, 0);
+    return hermite(a, a);
+  });
+})();
+
+/**
+ * The shot containing a given progress value, with its index. Clamps at both
+ * ends.
+ *
+ * The index is needed by the easing rule, which depends on a shot's position in
+ * the journey rather than on any property of the shot itself. Computed here
+ * once at module load rather than tracked incrementally, so it cannot fall out
+ * of step with SHOTS.
+ */
+const INDEXED: readonly IndexedShot[] = SHOTS.map((shot, index) => ({ ...shot, index }));
+
+export function shotAt(progress: number): IndexedShot {
   const p = Math.min(1, Math.max(0, progress));
-  for (const shot of SHOTS) {
+  for (const shot of INDEXED) {
     if (p >= shot.from && p <= shot.to) return shot;
   }
-  return p < SHOTS[0].from ? SHOTS[0] : SHOTS[SHOTS.length - 1];
+  return p < INDEXED[0].from ? INDEXED[0] : INDEXED[INDEXED.length - 1];
 }
 
 /**
@@ -514,7 +742,9 @@ export function sampleCamera(progress: number): CameraState {
   const span = shot.to - shot.from;
   // Guard against a zero-length shot dividing by zero.
   const raw = span > 0 ? (progress - shot.from) / span : 0;
-  const t = ease(shot.ease, Math.min(1, Math.max(0, raw)));
+  // The curve is chosen by position in the journey, not by the shot's own
+  // `ease` field — see the note beside EASE_IN for why.
+  const t = easedParameter(shot.index, Math.min(1, Math.max(0, raw)));
 
   return {
     position: lerpVec(shot.position[0], shot.position[1], t),

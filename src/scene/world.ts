@@ -52,12 +52,18 @@ export const WORLD = {
   /**
    * Half-extents of the levelled industrial pad, in metres.
    *
-   * Grown from 62×52 alongside the factory itself. The pad has to track the
-   * building: too small and the plant spills over the edge of its own
+   * Grown from 62×52 alongside the factory itself, twice now. The pad has to
+   * track the building: too small and the plant spills over the edge of its own
    * levelled shelf, too large and the clearing reads as an empty plain with a
-   * shed on it. check-layout.ts asserts both directions.
+   * shed on it. check-layout.ts asserts both directions, and reads the
+   * factory's real extent rather than a stale hard-coded number.
+   *
+   * The X extent is bounded by the lake, which is only 12m away at the closest
+   * approach — see check-layout's "lake clears the pad" assertion. Growing the
+   * plant further will require moving the lake or the channel approach, not
+   * widening the pad.
    */
-  factoryPadHalf: { x: 78, z: 66 } as const,
+  factoryPadHalf: { x: 76, z: 68 } as const,
   /**
    * Height of the pad relative to the surrounding jungle floor. Industrial
    * sites are cut flat and often raised, and a visible shelf edge reads as
@@ -154,12 +160,17 @@ export const WORLD = {
    * never drift apart. Resizing the plant is then a one-line change that the
    * layout checks can verify.
    *
-   * 1.45 puts the main hall at 64m long and the stack 44m above the roof, on a
-   * footprint of about 104×90m. Against a 600m terrain radius and a 190m lake
-   * that reads as a plant with real presence rather than a shed on a plain,
-   * which is what the previous 72×62m footprint came across as.
+   * 1.85 puts the main hall at 81m long and the stack 56m above the roof, on a
+   * footprint of about 133×115m — 3.3x the area of the 72×62m plant it
+   * replaced. That is the scale at which a plant stops reading as a shed on a
+   * plain: against a 600m terrain radius and a 190m lake, it is now the largest
+   * single object in the frame, which is what the piece is about.
+   *
+   * The pad tracks it (see factoryPadHalf), and the chimney is anchored in world
+   * space rather than local, so growing the plant by a further 28% did not
+   * require retiming a single camera keyframe or moving the plume.
    */
-  factoryScale: 1.45,
+  factoryScale: 1.85,
 } as const;
 
 /**

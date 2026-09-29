@@ -8,6 +8,7 @@ import {
   Float32BufferAttribute,
   InstancedBufferAttribute,
   InstancedBufferGeometry,
+  PerspectiveCamera,
   Vector3,
   type Mesh,
   type ShaderMaterial,
@@ -16,6 +17,7 @@ import { Uniforms } from "@/lib/uniforms";
 import { createRandom, range } from "@/scene/random";
 import { WORLD, terrainHeight } from "@/scene/world";
 import { scrollStore } from "@/lib/scrollStore";
+import { sampleCamera } from "@/scene/timeline";
 import { FOG_COLOR } from "./Lighting";
 
 /**
@@ -76,50 +78,54 @@ function writeFishInstances(geo: InstancedBufferGeometry, fish: Fish[], count: n
 }
 
 /**
- * The three flocks, as [centreX, centreZ, orbitRate] in world XZ.
+ * The three flocks, as [centreX, centreZ, orbitRate, baseAltitude] in world XZ.
  *
- * A flock shares a heading, so the birds in it circle in the same direction at
- * similar speeds. Without this every bird orbits independently and the group
- * reads as unrelated individuals who happen to be co-located, which is exactly
- * what the first version looked like.
+ * ## Why these positions
  *
- * Rates differ per flock (0.085, 0.107, 0.129 rad/s) so that when two happen
- * to be in frame together they are visibly not in formation, and each is slow
- * enough for the circle to read as circling rather than as a blur.
+ * Placed along the camera's actual path rather than scattered over the map. The
+ * camera runs from the opening bird's-eye at 900m out, in over the plant, up
+ * the plume from y=50 to y=234, then back out over the lake. A flock that is
+ * somewhere in that volume is seen at 100-400m, where a bird is a legible
+ * shape; one out beyond it is seen at 900m, where it is a third of a pixel.
+ *
+ * The altitudes straddle the camera's own band through the middle of the
+ * journey (50-234m), so the birds cross in front of the treeline and the plume
+ * rather than sitting in a layer the camera never visits.
+ *
+ * ## Why a flock shares a rate
+ *
+ * Birds in a flock circle in the same direction at similar speeds. Without this
+ * each bird orbits independently and the group reads as unrelated individuals
+ * who happen to be co-located. Rates differ per flock so that when two are in
+ * frame together they are visibly not in formation.
  */
-const FLOCKS: readonly (readonly [number, number, number])[] = [
-  // Over the jungle between the plant and the lake — the ground the camera
-  // crosses most often.
-  [-70, 90, 0.085],
-  // Beyond the lake, in the direction the camera looks during the pullout.
-  [-280, 190, 0.107],
-  // Behind the plant, so they are visible in the opening bird's-eye.
-  [90, -60, 0.129],
+const FLOCKS: readonly (readonly [number, number, number, number])[] = [
+  // Over the jungle between the plant and the lake, which is the ground the
+  // camera crosses while climbing the plume.
+  [-60, 130, 0.085, 150],
+  // Out over the lake, so they are in frame during the pullout and the descent.
+  [-230, 200, 0.107, 195],
+  // Behind and above the plant, visible in the opening bird's-eye once the
+  // depth fade has thinned them to silhouettes.
+  [110, -80, 0.129, 170],
 ];
 
-export function Birds({ count = 21 }: { count?: number }) {
+export function Birds({ count = 24 }: { count?: number }) {
   const geometry = useMemo(() => {
     const random = createRandom(9182);
     const positions = new Float32Array(count * 3);
     const orbits = new Float32Array(count * 4);
     const rates = new Float32Array(count);
     const phases = new Float32Array(count);
+    const scales = new Float32Array(count);
 
     for (let i = 0; i < count; i++) {
-      // Three separate flocks rather than one scatter.
-      //
-      // A single set of orbits spread over the whole map puts birds behind the
-      // factory, over the lake and out at the treeline in roughly equal
-      // numbers, and since only a few are ever in frame at once it reads as
-      // random specks that happen to be there. Concentrating them into tight
-      // clusters means that when a flock IS in frame, all of it is — which is
-      // what makes it read as a flock.
-      const [centreX, centreZ, rate] = FLOCKS[i % FLOCKS.length];
       // Tight orbits, 40-110m, so a flock stays coherent.
+      const [centreX, centreZ, rate, base] = FLOCKS[i % FLOCKS.length];
       const radius = range(random, 40, 110);
-      // Above the canopy and below the plume base, so they read against sky and
-      // treeline rather than against smoke.
-      const altitude = terrainHeight(centreX, centreZ) + range(random, 55, 150);
+      // Spread through a vertical band around the flock's base altitude, so the
+      // group has depth rather than reading as a flat ring.
+      const altitude = base + range(random, -45, 45);
 
       positions[i * 3] = centreX + Math.cos(random() * Math.PI * 2) * radius;
       positions[i * 3 + 1] = altitude;
@@ -134,6 +140,9 @@ export function Birds({ count = 21 }: { count?: number }) {
       // rather than being perfectly rigid.
       rates[i] = rate * range(random, 0.92, 1.08);
       phases[i] = random() * Math.PI * 2;
+      // Raptors: 1.3m to 3.0m across. A uniform small bird would be a couple of
+      // pixels at the distances the camera actually sees them from.
+      scales[i] = range(random, 1.3, 3.0);
     }
 
     const geo = new BufferGeometry();
@@ -141,6 +150,7 @@ export function Birds({ count = 21 }: { count?: number }) {
     geo.setAttribute("aOrbit", new Float32BufferAttribute(orbits, 4));
     geo.setAttribute("aFlight", new Float32BufferAttribute(rates, 1));
     geo.setAttribute("aPhase", new Float32BufferAttribute(phases, 1));
+    geo.setAttribute("aSpan", new Float32BufferAttribute(scales, 1));
     return geo;
   }, [count]);
 
@@ -157,12 +167,29 @@ export function Birds({ count = 21 }: { count?: number }) {
     []
   );
 
-  useFrame(({ clock, gl }) => {
+  useFrame(({ clock, gl, camera }) => {
     uniforms.set("uTime", clock.elapsedTime);
-    // Metres-to-pixels, so a bird 500m away is genuinely smaller than one
-    // 100m away. This was previously derived from the canvas height with a
-    // fudge factor, which made distant birds the same size as near ones.
-    uniforms.set("uSize", gl.domElement.height * 0.055);
+    // PIXELS PER METRE AT ONE METRE. This is a physical quantity, not a taste
+    // setting: the sprite IS the bird's silhouette, so its width in pixels has
+    // to be the bird's wingspan projected onto the screen.
+    //
+    // It was previously `height * 0.055`, which at 1080p is 59 — and 59 divided
+    // by a typical viewing distance of 300m is 0.2 pixels. The birds were
+    // sub-pixel and could not have been visible at any distance. The factor here
+    // corresponds to a bird about 2.05m across, and aSpan scales it per bird.
+    //
+    // Read off the live camera rather than assuming a field of view, because the
+    // camera's FOV is animated across the journey and a fixed constant would be
+    // wrong for most of it. The perspective branch is the one that applies here;
+    // the orthographic one exists only to satisfy the union type and would be
+    // meaningless in this project.
+    const perspective = camera as PerspectiveCamera;
+    if (perspective.isPerspectiveCamera) {
+      uniforms.set(
+        "uSize",
+        gl.domElement.height / (2 * Math.tan((perspective.fov * Math.PI) / 360))
+      );
+    }
   });
 
   return (
@@ -176,9 +203,10 @@ export function Birds({ count = 21 }: { count?: number }) {
           uniform float uSize;
           // x/z = orbit centre, y = altitude, w = orbit radius
           attribute vec4 aOrbit;
-          // Per-flock orbit rate, and per-bird phase.
+          // Per-flock orbit rate, per-bird phase, and wingspan in metres.
           attribute float aFlight;
           attribute float aPhase;
+          attribute float aSpan;
 
           varying float vWing;
           varying float vDepth;
@@ -201,14 +229,17 @@ export function Birds({ count = 21 }: { count?: number }) {
             vec4 mv = modelViewMatrix * vec4(p, 1.0);
             gl_Position = projectionMatrix * mv;
 
-            // Apparent size, and the depth fade below.
+            // The sprite is the bird, so its width in pixels is the wingspan
+            // divided by distance. uSize is pixels-per-metre at one metre, so
+            // uSize * span / distance falls out directly.
             float dist = max(-mv.z, 1.0);
-            gl_PointSize = uSize / dist * (0.8 + vWing * 0.4);
+            gl_PointSize = max(1.5, uSize * aSpan / dist) * (0.85 + vWing * 0.3);
 
             // Distant birds fade toward the haze rather than staying hard black
-            // specks, which is what made them read as dirt on the lens in the
-            // opening bird's-eye — where the nearest flock is over 900m away.
-            vDepth = 1.0 - smoothstep(250.0, 1100.0, dist);
+            // specks. Past about 700m a bird is two or three pixels across, and
+            // drawing it as a solid dark dot reads as sensor noise on the lens
+            // rather than as an animal.
+            vDepth = 1.0 - smoothstep(320.0, 780.0, dist);
           }
         `}
         fragmentShader={/* glsl */ `
@@ -268,20 +299,43 @@ const OUTFALL: [number, number] = [
 /**
  * How polluted the lake is at a given scroll progress.
  *
- * The narrative curve, and the single place the story is authored:
+ * The narrative curve, and the single place the story is authored. Four systems
+ * read it — the water surface, the discharge plume, the sediment and the fish —
+ * so they cannot disagree about what the water looks like.
  *
- *   0.86 - 0.90  water is clean; nothing has been discharged
- *   0.90 - 0.93  effluent begins pouring in at the outfall
- *   0.93 - 0.96  the plume spreads across the lake
- *   0.96 - 0.99  the plume reaches the fish, which start dying
- *   0.99 - 1.00  everything is dead
+ * Keyed to the SHOT boundaries, which is why it was re-authored when the
+ * timeline was retimed. The old version was pinned to 0.90-0.985, which had
+ * been chosen against the previous shot ranges; after the retime, 0.90 fell in
+ * the middle of the descent rather than at the start of it, and the pollution
+ * would have begun before the camera had finished arriving at the lake.
  *
- * A pure function of progress, so scrolling back up restores the lake.
+ * Against the current shots:
+ *
+ *   0.7154 - 0.76   water-approach, high over the lake. CLEAN. This is the
+ *                    "before", and it is the whole reason the sequence works —
+ *                    the viewer sees a clear lake first.
+ *   0.76  - 0.8371  the discharge starts at the outfall and the plume begins
+ *                    to spread. Still seen from above, so the spread is legible
+ *                    on the surface rather than only from underwater.
+ *   0.8371 - 0.9132 the camera crosses the waterline with the plume advancing.
+ *   0.9132 - 0.9878 underwater: the plume reaches the fish, which flee and then
+ *                    die.
+ *   0.9878 +        the outro, fully polluted and dead.
+ *
+ * A pure function of progress, so scrolling back up restores the lake and
+ * revives the fish. Time-accumulated state cannot do that: it leaves dead fish
+ * floating on clear water.
  */
 export function pollutionAt(progress: number): number {
-  if (progress < 0.9) return 0;
-  if (progress > 0.985) return 1;
-  return (progress - 0.9) / 0.085;
+  const START = 0.76;
+  const FULL = 0.92;
+  if (progress <= START) return 0;
+  if (progress >= FULL) return 1;
+  // Smoothstep rather than linear, so the discharge starts and completes
+  // gently. A linear ramp begins at full rate, which shows as the plume
+  // appearing rather than as effluent being poured.
+  const t = (progress - START) / (FULL - START);
+  return t * t * (3 - 2 * t);
 }
 
 type Fish = {
@@ -296,38 +350,138 @@ type Fish = {
   resilience: number;
 };
 
-export function Fish({ count = 34 }: { count?: number }) {
+/** The camera's positions below the waterline, sampled once at module load. */
+const UNDERWATER_PATH: readonly Vector3[] = (() => {
+  const path: Vector3[] = [];
+  for (let i = 0; i <= 300; i++) {
+    const state = sampleCamera(i / 300);
+    if (state.position[1] < 0) path.push(new Vector3(...state.position));
+  }
+  return path;
+})();
+
+/** Half the fish's body length, after the 1.6x scale in the vertex shader. */
+const BODY_HALF = 0.8;
+
+/**
+ * How close the camera is allowed to pass to a fish, in metres.
+ *
+ * 2.5m is the clearance that actually matters: the body is 1.6m long, so
+ * anything closer than about 1m puts the camera inside a fish. An earlier value
+ * of 4m was safe but pushed the whole school to 30m or further, which left the
+ * camera alone in an empty lake — the fish were placed correctly and still
+ * absent from the one shot they exist for.
+ */
+const CAMERA_CLEARANCE = 2.5;
+
+/**
+ * Place the school.
+ *
+ * Rejection sampling with three constraints, and a bounded number of attempts.
+ *
+ * ## Why constraints rather than a clamp
+ *
+ * The previous version placed every fish on one uniform sample and clamped
+ * afterwards. That produced three separate faults which all look identical on
+ * screen — "the fish are not there":
+ *
+ *   1. 20 of 34 were BURIED. The depth clamp was `max(0.8, -bed - 0.8)`, which
+ *      is a FLOOR rather than a headroom requirement: over a bed at -6.6m it
+ *      placed a fish at -5.8m, leaving 0.8m of clearance for a body whose
+ *      half-length is 0.8m. Exactly touching.
+ *   2. 10 of 34 were on DRY LAND. Positions ran to 0.72 of the nominal radius,
+ *      but the shoreline carries up to 13m of noise wobble and the bowl narrows
+ *      toward the edge, so a point inside the nominal circle can sit on the
+ *      bank.
+ *   3. The nearest fish to the camera was 1.2m — inside the animal.
+ *
+ * Testing the bed BEFORE choosing a depth, and retrying, fixes all three at the
+ * source. Clamping after the fact cannot: by the time you know a fish is buried
+ * there is no free parameter left to move.
+ *
+ * The attempt cap matters. An unbounded loop would hang the page if the
+ * constraints ever became unsatisfiable, and a missing fish is visibly better
+ * than a frozen tab.
+ *
+ * Exported so `scripts/check-life.ts` asserts against THIS function rather than
+ * a second reimplementation of it. An earlier version of that check modelled the
+ * placement with its own sampler, and the two drifted far enough apart that it
+ * reported a 30m clearance while the real code produced a different arrangement
+ * entirely — which is the same class of bug as the one it was written to catch.
+ */
+export function placeFish(count: number): Fish[] {
+  const random = createRandom(4471);
+  const school: Fish[] = [];
+
+  const tooCloseToCamera = (x: number, y: number, z: number) => {
+    const limit = CAMERA_CLEARANCE * CAMERA_CLEARANCE;
+    for (const point of UNDERWATER_PATH) {
+      const dx = point.x - x;
+      const dy = point.y - y;
+      const dz = point.z - z;
+      if (dx * dx + dy * dy + dz * dz < limit) return true;
+    }
+    return false;
+  };
+
+  for (let i = 0; i < count; i++) {
+    let x = 0;
+    let y = 0;
+    let z = 0;
+    let placed = false;
+
+    for (let attempt = 0; attempt < 80 && !placed; attempt++) {
+      const angle = random() * Math.PI * 2;
+      const distance = Math.pow(random(), 0.7) * LAKE.radius * 0.6;
+      const candidateX = LAKE.centre.x + Math.cos(angle) * distance;
+      const candidateZ = LAKE.centre.z + Math.sin(angle) * distance;
+
+      // Must be genuinely under water with room to swim. The -1.5m test matches
+      // the shoreline the terrain carves, so a fish can never land on the bank.
+      const bed = terrainHeight(candidateX, candidateZ);
+      if (bed > -1.5) continue;
+
+      // A HEADROOM test, not a floor: the body needs BODY_HALF clear of the bed
+      // at its own depth.
+      const maxDepth = -bed - BODY_HALF - 0.3;
+      if (maxDepth < 1.2) continue;
+      const candidateY = -Math.min(range(random, 1.6, 6.0), maxDepth);
+
+      if (tooCloseToCamera(candidateX, candidateY, candidateZ)) continue;
+
+      x = candidateX;
+      y = candidateY;
+      z = candidateZ;
+      placed = true;
+    }
+
+    // Fall back to the middle of the bowl if the constraints could not be met,
+    // rather than leaving a fish at the world origin.
+    if (!placed) {
+      x = LAKE.centre.x;
+      z = LAKE.centre.z;
+      y = -Math.max(2, WORLD.lakeBasinDepth * 0.5);
+    }
+
+    school.push({
+      home: new Vector3(x, y, z),
+      heading: random() * Math.PI * 2,
+      speed: range(random, 0.5, 1.1),
+      phase: random() * Math.PI * 2,
+      size: range(random, 0.75, 1.35),
+      resilience: range(random, 0.6, 1.25),
+    });
+  }
+  return school;
+}
+
+export function Fish({ count = 64 }: { count?: number }) {
   const mesh = useRef<Mesh>(null);
   const material = useRef<ShaderMaterial>(null);
 
-  const fish = useMemo<Fish[]>(() => {
-    const random = createRandom(4471);
-    const school: Fish[] = [];
-    for (let i = 0; i < count; i++) {
-      // Scattered through the lake, biased away from the outfall so the
-      // cleanest fish start furthest from the discharge.
-      const angle = random() * Math.PI * 2;
-      const distance = Math.pow(random(), 0.7) * LAKE.radius * 0.72;
-      // Keep inside the bowl, accounting for the shoreline wobble.
-      const x = LAKE.centre.x + Math.cos(angle) * distance;
-      const z = LAKE.centre.z + Math.sin(angle) * distance;
-
-      // Depth: 1.5m to 6m below the surface. The bowl is deepest at the
-      // centre, so clamp against the actual terrain.
-      const bed = terrainHeight(x, z);
-      const depth = Math.min(range(random, 1.6, 6.0), Math.max(0.8, -bed - 0.8));
-
-      school.push({
-        home: new Vector3(x, -depth, z),
-        heading: random() * Math.PI * 2,
-        speed: range(random, 0.5, 1.1),
-        phase: random() * Math.PI * 2,
-        size: range(random, 0.75, 1.35),
-        resilience: range(random, 0.6, 1.25),
-      });
-    }
-    return school;
-  }, [count]);
+  // The school, placed once. See placeFish() for the rules and for why they are
+  // rules rather than a clamp.
+  const fish = useMemo(() => placeFish(count), [count]);
 
   // --- Fish geometry ------------------------------------------------------
   // A single low-poly fish: an elongated body plus a tail fin. Built once and
