@@ -2,8 +2,8 @@
 
 import { useMemo, useRef } from "react";
 import { useFrame } from "@react-three/fiber";
-import { BufferAttribute, BufferGeometry, Color, Vector3, type Mesh } from "three";
-import { WORLD, terrainHeight } from "@/scene/world";
+import { BufferAttribute, BufferGeometry, Color, Vector2, Vector3, type Mesh } from "three";
+import { WORLD, terrainHeight, terrainStats } from "@/scene/world";
 import { SUN_DIRECTION } from "@/scene/sun";
 import { FOG_COLOR, FOG_DENSITY } from "./Lighting";
 import type { QualitySettings } from "@/scene/quality";
@@ -43,6 +43,16 @@ const fragmentShader = /* glsl */ `
   uniform vec3 uSiltColor;
   uniform vec3 uPadColor;
   uniform vec3 uFogColor;
+  /**
+   * [lowestDryHeight, highestHeight] in metres, measured from the same
+   * terrainHeight() that builds the mesh.
+   *
+   * Every colour band on this surface is a fraction of this range rather than
+   * an absolute altitude. Absolute thresholds stop working the moment the
+   * terrain is reshaped, and they fail silently: the shader still compiles, it
+   * just never reaches the upper bands.
+   */
+  uniform vec2 uHeightRange;
   uniform float uFogDensity;
   uniform float uPadHalfX;
   uniform float uPadHalfZ;
@@ -85,16 +95,41 @@ const fragmentShader = /* glsl */ `
     // --- Colour layers --------------------------------------------------
     // Humid tropical ground: dark organic soil low down, olive-green scrub
     // through the mid elevations, exposed rock only on genuinely steep faces.
+    //
+    // THE BANDING BOUNDARIES ARE RELATIVE, and they used to be absolute
+    // constants that had silently stopped meaning anything.
+    //
+    // The terrain was reshaped when the mountain ridge was removed, and its
+    // elevation range changed completely — the ground now runs from about 0m to
+    // 76m instead of from 0m to 430m. The thresholds stayed at 4/30/110/330 and
+    // 55/190, which meant:
+    //
+    //   - nothing was ever "uHighColor", because 110m is above every hilltop
+    //   - the rock term was completely dead, because its height gate started at
+    //     55m and most of the world's steepest ground is lower than that
+    //
+    // So the terrain rendered as a single flat blend of two colours. Both
+    // numbers now come from uHeightRange, which <Terrain> measures from the
+    // same terrainHeight() the geometry is built from — so they cannot drift
+    // out of sync with the land they are colouring.
+    float hMin = uHeightRange.x;
+    float hMax = uHeightRange.y;
+    float hSpan = max(hMax - hMin, 1.0);
+    // 0 at the lowest ground, 1 at the highest, in the dry basin.
+    float hT = clamp((vHeight - hMin) / hSpan, 0.0, 1.0);
+
     vec3 color = uLowColor;
-    color = mix(color, uMidColor, smoothstep(4.0, 30.0, vHeight));
-    color = mix(color, uHighColor, smoothstep(110.0, 330.0, vHeight));
+    color = mix(color, uMidColor, smoothstep(0.10, 0.48, hT));
+    color = mix(color, uHighColor, smoothstep(0.55, 0.95, hT));
 
-    // Rock only on the mountain flanks. The jungle floor has no visible bare
-    // rock, because in a real tropical forest the floor is covered in
-    // litter and undergrowth.
-    color = mix(color, uRockColor, smoothstep(0.30, 0.60, slope) * smoothstep(55.0, 190.0, vHeight));
+    // Rock on the genuinely steep faces. In a real tropical forest the floor is
+    // covered in litter and undergrowth, so bare rock belongs on slopes only —
+    // and the height gate is now the upper third of the relief, where a scoured
+    // hillside would actually appear.
+    color = mix(color, uRockColor, smoothstep(0.30, 0.60, slope) * smoothstep(0.45, 0.85, hT));
 
-    // Wet silt in the lake basin.
+    // Wet silt in the lake basin. The shoreline is at y = 0 and the bed goes to
+    // -9m, and those numbers are stable, so this one stays absolute.
     color = mix(color, uSiltColor, smoothstep(1.5, -5.0, vHeight));
 
     // The industrial pad. Desaturated on purpose, so the factory structures
@@ -217,25 +252,28 @@ function buildGeometry(segments: number) {
 
 /**
  * The outer skirt: low-resolution ground from the edge of the detailed
- * heightfield out to the mountain ring.
+ * heightfield out to the fog limit.
  *
- * Without this there is a visible void. The near terrain is a flat grid
- * bounded at radius 1400m, and the mountain ring does not begin until 3200m,
- * so the horizon would show sky through a 1800m gap. The mountains would
- * appear to float above an empty band.
+ * Without this the horizon would show sky through a gap between the detailed
+ * heightfield's edge and wherever the eye gives up. It is a single ring mesh
+ * of ~4k triangles sampling the same `terrainHeight()` function as the detailed
+ * mesh, so the two meet seamlessly at the seam and the far field costs nothing
+ * worth measuring.
  *
- * This fills that band with the same `terrainHeight()` function at a much
- * coarser resolution. It is a single ring mesh with ~2k triangles, so the gap
- * is closed for a negligible cost, and because both meshes sample the same
- * height function they meet seamlessly at the seam.
+ * It carries NO mountains. The ridge that used to stand on this skirt was a
+ * `ridgedFbm` term inside `terrainHeight()` itself, so it survived the
+ * deletion of `Mountains.tsx` and was the source of a wiggly band across the
+ * horizon. The term is gone; what remains is a low, smooth plain.
  */
 function buildSkirtGeometry(rings: number, segments: number) {
   // Slightly inside the detailed heightfield's edge so the two meshes
   // overlap rather than leaving a hairline crack at the seam.
   const innerRadius = WORLD.terrainRadius * 0.97;
-  // Out past the near mountain ring, so the ridge line is never floating
-  // above an exposed edge.
-  const outerRadius = WORLD.mountainRadius * 1.3;
+  // Out to the fog limit. The skirt is no longer there to carry a mountain
+  // ring — those are gone — but the seam between detailed terrain and open sky
+  // still has to be hidden, and a flat plain at 97% fog does that. See
+  // WORLD.skirtRadius.
+  const outerRadius = WORLD.skirtRadius;
 
   const vertexCount = (rings + 1) * (segments + 1);
   const positions = new Float32Array(vertexCount * 3);
@@ -286,6 +324,11 @@ function buildSkirtGeometry(rings: number, segments: number) {
 export function Terrain({ quality }: { quality: QualitySettings }) {
   const mesh = useRef<Mesh>(null);
 
+  // Sampled from the same height function that builds the geometry below, so
+  // the shader's colour bands are always fractions of the terrain that actually
+  // exists. Memoised inside terrainStats(), so this is a single scan.
+  const stats = terrainStats();
+
   const geometry = useMemo(
     () => buildGeometry(quality.terrainSegments),
     [quality.terrainSegments]
@@ -311,15 +354,22 @@ export function Terrain({ quality }: { quality: QualitySettings }) {
       uFogDensity: { value: FOG_DENSITY },
       uPadHalfX: { value: WORLD.factoryPadHalf.x },
       uPadHalfZ: { value: WORLD.factoryPadHalf.z },
+      // Measured once from the same height function that builds this mesh, so
+      // the colour bands stay correct through any future change to the terrain
+      // shape. See the comment on the uniform.
+      uHeightRange: { value: new Vector2(stats.min, stats.max) },
       uSunDirection: {
         value: new Vector3(SUN_DIRECTION.x, SUN_DIRECTION.y, SUN_DIRECTION.z).normalize(),
       },
       uSunColor: { value: new Color(1.0, 0.72, 0.44) },
-      uSkyColor: { value: new Color(0.52, 0.68, 0.88) },
-      uGroundColor: { value: new Color(0.1, 0.13, 0.07) },
+      uSkyColor: { value: new Color(0.56, 0.74, 0.96) },
+      uGroundColor: { value: new Color(0.16, 0.22, 0.1) },
       uCameraPosition: { value: new Vector3() },
     }),
-    []
+    // `stats` is a memoised singleton (see terrainStats), so these are stable
+    // for the lifetime of the page. Listed explicitly so the dependency is
+    // honest rather than relying on that.
+    [stats.min, stats.max]
   );
 
   // The fog term needs the camera's world position, which the uniform cannot
@@ -340,10 +390,12 @@ export function Terrain({ quality }: { quality: QualitySettings }) {
       </mesh>
 
       {/*
-        Rendered first and without shadows. The skirt sits behind the
-        mountains in draw order but is geometrically nearer than them, so it
-        must not cast — otherwise a 620m ridge would throw a shadow across
-        the entire visible landscape from a light that is behind the camera.
+        Rendered first and without shadows. The skirt is drawn before the
+        detailed heightfield so that the seam is always covered by the nearer,
+        higher-resolution mesh, whatever the depth precision does. It must not
+        cast either — the far plain sits between the sun and the entire
+        visible landscape, so a casting skirt would drop the whole site into
+        shadow.
       */}
       <mesh geometry={skirt} frustumCulled={false} renderOrder={-1}>
         <shaderMaterial

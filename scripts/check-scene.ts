@@ -1,5 +1,5 @@
 import { SHOTS, cardVisibility, sampleCamera } from "../src/scene/timeline";
-import { terrainHeight, WORLD } from "../src/scene/world";
+import { terrainHeight, terrainStats, plumeAxisAt, WORLD } from "../src/scene/world";
 import { TIERS, detectGpu } from "../src/scene/quality";
 
 /**
@@ -101,7 +101,10 @@ check(
 );
 check(
   "altitude span is cinematic",
-  maxAltitude > WORLD.terrainRadius * 0.4 && maxAltitude < WORLD.mountainRadius,
+  // The upper bound is the sky, not a mountain ring. There is no ridge to stay
+  // below any more, so the meaningful constraint is simply that the camera
+  // climbs well above the treeline and comes back down into the lake.
+  maxAltitude > WORLD.terrainRadius * 0.4 && maxAltitude < WORLD.skirtRadius,
   `${minAltitude.toFixed(0)}m to ${maxAltitude.toFixed(0)}m`
 );
 
@@ -128,23 +131,83 @@ let maxHeight = -Infinity;
 let nan = 0;
 for (let i = 0; i < 4000; i++) {
   const angle = (i / 4000) * Math.PI * 2 * 37;
-  const radius = (i / 4000) * WORLD.mountainRadius * 1.2;
+  const radius = (i / 4000) * WORLD.skirtRadius;
   const h = terrainHeight(Math.cos(angle) * radius, Math.sin(angle) * radius);
   if (!Number.isFinite(h)) nan++;
   minHeight = Math.min(minHeight, h);
   maxHeight = Math.max(maxHeight, h);
 }
-
 check("no NaN in the heightfield", nan === 0, `${nan} sample(s)`);
+
+// Relief is measured over the DETAILED terrain only. The skirt is deliberately
+// near-flat — its job is to hide the seam at the fog limit, not to provide
+// topography — so including it in this figure averaged away the landscape's
+// actual range and made the check fail once the ridge was removed.
+//
+// The threshold is deliberately low. There are no mountains any more, so the
+// only vertical interest left is the lake bowl (down to -9m) and the rolling
+// jungle floor (up to ~58m), and this asserts that both are present.
+let detailedMin = Infinity;
+let detailedMax = -Infinity;
+for (let i = 0; i < 4000; i++) {
+  const angle = (i / 4000) * Math.PI * 2 * 37;
+  const radius = (i / 4000) * WORLD.terrainRadius;
+  const h = terrainHeight(Math.cos(angle) * radius, Math.sin(angle) * radius);
+  detailedMin = Math.min(detailedMin, h);
+  detailedMax = Math.max(detailedMax, h);
+}
+// minHeight/maxHeight are retained for the NaN sweep across the full skirt.
 check(
   "terrain has real vertical relief",
-  maxHeight - minHeight > 150,
-  `${minHeight.toFixed(0)}m to ${maxHeight.toFixed(0)}m`
+  detailedMax - detailedMin > 40,
+  `min ${detailedMin.toFixed(0)}m to max ${detailedMax.toFixed(0)}m over the detailed ${WORLD.terrainRadius}m`
+);
+
+// The treeline must actually exist. It used to be a hand-typed 320m against a
+// landscape topping out at 76m, so it rejected nothing and the treeline
+// silently vanished — forest to the summit of the highest hill. Now it is
+// derived from the terrain's own statistics, and this asserts the derived value
+// is (a) below the summit and (b) low enough to leave real forest below it.
+const stats = terrainStats();
+check(
+  "the treeline is below the highest ground",
+  stats.treeline < stats.max,
+  `treeline ${stats.treeline.toFixed(1)}m, summit ${stats.max.toFixed(1)}m`
 );
 check(
-  "mountains reach a visible height",
-  maxHeight > 250,
-  `max ${maxHeight.toFixed(0)}m`
+  "most of the landscape is still forested",
+  stats.treeline > stats.min + (stats.max - stats.min) * 0.45,
+  `treeline sits ${(((stats.treeline - stats.min) / (stats.max - stats.min)) * 100).toFixed(0)}% of the way up the relief`
+);
+// The floor OUTSIDE the lake must sit above the waterline, or the jungle
+// scatter rejects it and the forest thins out into bare ground. This is the
+// bug that produced "two layers of trees with empty land between them", so it
+// is worth a standing assertion rather than a one-time measurement.
+//
+// The lake itself is excluded: its bed is supposed to be below zero, and the
+// whole detailed-terrain disc contains it.
+let floorMin = Infinity;
+let flooded = 0;
+let floorSamples = 0;
+for (let i = 0; i < 6000; i++) {
+  const angle = i * 2.399963;
+  const radius = Math.sqrt(i / 6000) * WORLD.terrainRadius;
+  const x = Math.cos(angle) * radius;
+  const z = Math.sin(angle) * radius;
+  // Generous margin around the nominal radius, because the shoreline is
+  // wobbled by up to 13m of noise.
+  if (Math.hypot(x - WORLD.lakeCentre[0], z - WORLD.lakeCentre[2]) < WORLD.lakeRadius * 1.5) continue;
+  const h = terrainHeight(x, z);
+  floorSamples++;
+  floorMin = Math.min(floorMin, h);
+  if (h < 1.2) flooded++;
+}
+check(
+  "the jungle floor sits above the waterline",
+  flooded === 0,
+  flooded === 0
+    ? `lowest dry point ${floorMin.toFixed(1)}m, none of ${floorSamples} samples rejected as underwater`
+    : `${flooded} of ${floorSamples} samples below 1.2m, lowest ${floorMin.toFixed(1)}m — the forest will thin out here`
 );
 
 // Factory pad must actually be flat, or the factory will float or sink.
@@ -168,6 +231,62 @@ check(
   padDeviation < 0.6,
   `max deviation ${padDeviation.toFixed(2)}m`
 );
+
+// --- Plume tracking -------------------------------------------------------
+// The five `rise-*` shots exist to climb alongside the smoke. They were found
+// to be doing the opposite: the plume leans downwind toward +x while the
+// hand-typed keyframes marched toward -x, so the camera was climbing through
+// clear air with the smoke leaving frame. This asserts the shots stay near the
+// column's centreline, which is the property that actually matters and which
+// cannot be expressed by reading the keyframes.
+console.log("\nPlume tracking");
+{
+  const riseShots = SHOTS.filter((s) => s.id.startsWith("rise-"));
+  let worstOffset = 0;
+  let worstShot = "";
+  for (const shot of riseShots) {
+    for (const key of shot.target) {
+      const [x, y, z] = key;
+      const axis = plumeAxisAt(y);
+      // Horizontal distance from the column's centreline at the same altitude.
+      const offset = Math.hypot(x - axis[0], z - axis[2]);
+      if (offset > worstOffset) {
+        worstOffset = offset;
+        worstShot = shot.id;
+      }
+    }
+  }
+  // The column is up to ~110m wide at the top, so 30m off-axis is still inside
+  // the smoke. Beyond that the camera is looking at air.
+  check(
+    "every rise shot aims at the plume",
+    worstOffset < 30,
+    `worst offset ${worstOffset.toFixed(1)}m in ${worstShot || "n/a"}`
+  );
+
+  // And the camera must be looking roughly along the column rather than
+  // across it, so the shot reads as climbing a plume.
+  let worstPitch = Infinity;
+  for (const shot of riseShots) {
+    for (let i = 0; i <= 100; i++) {
+      const state = sampleCamera(shot.from + ((shot.to - shot.from) * i) / 100);
+      const dx = state.target[0] - state.position[0];
+      const dy = state.target[1] - state.position[1];
+      const dz = state.target[2] - state.position[2];
+      const horizontal = Math.hypot(dx, dz);
+      if (horizontal < 1) continue;
+      const pitch = Math.abs(Math.atan2(dy, horizontal)) * (180 / Math.PI);
+      worstPitch = Math.min(worstPitch, pitch);
+    }
+  }
+  // A pitch near zero means the camera is level with its target, i.e. looking
+  // horizontally at a point on the column rather than up or along it.
+  check(
+    "the camera does not sight horizontally across the plume",
+    worstPitch > 8,
+    `flattest pitch ${worstPitch.toFixed(1)}°`
+  );
+}
 
 // The lake basin must actually be below the waterline.
 check(
@@ -212,12 +331,12 @@ check(
   `target ${opening.target[0].toFixed(0)}, ${opening.target[2].toFixed(0)}`
 );
 
-// The detailed heightfield is bounded, so something must fill the gap between
-// it and the mountain ring or the horizon shows a void.
+// The detailed heightfield is bounded, so the coarse skirt has to reach well
+// past its edge or the horizon shows a void between terrain and sky.
 check(
-  "no gap between detailed terrain and the mountain ring",
-  WORLD.mountainRadius * 0.88 > WORLD.terrainRadius,
-  `terrain ends at ${WORLD.terrainRadius}m, mountains at ${(WORLD.mountainRadius * 0.88).toFixed(0)}m`
+  "the skirt overlaps the detailed terrain and reaches the fog limit",
+  WORLD.skirtRadius * 0.88 > WORLD.terrainRadius,
+  `terrain ends at ${WORLD.terrainRadius}m, skirt at ${WORLD.skirtRadius}m`
 );
 
 // --- Quality tiers -------------------------------------------------------

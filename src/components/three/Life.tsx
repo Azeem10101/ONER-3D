@@ -16,6 +16,7 @@ import { Uniforms } from "@/lib/uniforms";
 import { createRandom, range } from "@/scene/random";
 import { WORLD, terrainHeight } from "@/scene/world";
 import { scrollStore } from "@/lib/scrollStore";
+import { FOG_COLOR } from "./Lighting";
 
 /**
  * LIVING THINGS
@@ -74,45 +75,94 @@ function writeFishInstances(geo: InstancedBufferGeometry, fish: Fish[], count: n
   geo.instanceCount = count;
 }
 
-export function Birds({ count = 14 }: { count?: number }) {
+/**
+ * The three flocks, as [centreX, centreZ, orbitRate] in world XZ.
+ *
+ * A flock shares a heading, so the birds in it circle in the same direction at
+ * similar speeds. Without this every bird orbits independently and the group
+ * reads as unrelated individuals who happen to be co-located, which is exactly
+ * what the first version looked like.
+ *
+ * Rates differ per flock (0.085, 0.107, 0.129 rad/s) so that when two happen
+ * to be in frame together they are visibly not in formation, and each is slow
+ * enough for the circle to read as circling rather than as a blur.
+ */
+const FLOCKS: readonly (readonly [number, number, number])[] = [
+  // Over the jungle between the plant and the lake — the ground the camera
+  // crosses most often.
+  [-70, 90, 0.085],
+  // Beyond the lake, in the direction the camera looks during the pullout.
+  [-280, 190, 0.107],
+  // Behind the plant, so they are visible in the opening bird's-eye.
+  [90, -60, 0.129],
+];
+
+export function Birds({ count = 21 }: { count?: number }) {
   const geometry = useMemo(() => {
     const random = createRandom(9182);
     const positions = new Float32Array(count * 3);
-    const seeds = new Float32Array(count * 4);
+    const orbits = new Float32Array(count * 4);
+    const rates = new Float32Array(count);
+    const phases = new Float32Array(count);
 
     for (let i = 0; i < count; i++) {
-      // Circling altitude: above the canopy, below the plume base, so birds
-      // read against sky and treeline rather than against smoke.
-      const radius = range(random, 90, 380);
-      const centreX = range(random, -140, 140);
-      const centreZ = range(random, -140, 260);
-      const altitude = terrainHeight(0, 0) + range(random, 70, 210);
+      // Three separate flocks rather than one scatter.
+      //
+      // A single set of orbits spread over the whole map puts birds behind the
+      // factory, over the lake and out at the treeline in roughly equal
+      // numbers, and since only a few are ever in frame at once it reads as
+      // random specks that happen to be there. Concentrating them into tight
+      // clusters means that when a flock IS in frame, all of it is — which is
+      // what makes it read as a flock.
+      const [centreX, centreZ, rate] = FLOCKS[i % FLOCKS.length];
+      // Tight orbits, 40-110m, so a flock stays coherent.
+      const radius = range(random, 40, 110);
+      // Above the canopy and below the plume base, so they read against sky and
+      // treeline rather than against smoke.
+      const altitude = terrainHeight(centreX, centreZ) + range(random, 55, 150);
 
       positions[i * 3] = centreX + Math.cos(random() * Math.PI * 2) * radius;
       positions[i * 3 + 1] = altitude;
       positions[i * 3 + 2] = centreZ + Math.sin(random() * Math.PI * 2) * radius;
 
-      // x: orbit centre, y: orbit centre, z: orbit radius, w: orbit phase
-      seeds[i * 4] = centreX;
-      seeds[i * 4 + 1] = centreZ;
-      seeds[i * 4 + 2] = radius;
-      seeds[i * 4 + 3] = random() * Math.PI * 2;
+      // aOrbit: x/z = orbit centre, y = altitude, w = orbit radius
+      orbits[i * 4] = centreX;
+      orbits[i * 4 + 1] = altitude;
+      orbits[i * 4 + 2] = centreZ;
+      orbits[i * 4 + 3] = radius;
+      // Per-flock rate, nudged a little per bird so the formation breathes
+      // rather than being perfectly rigid.
+      rates[i] = rate * range(random, 0.92, 1.08);
+      phases[i] = random() * Math.PI * 2;
     }
 
     const geo = new BufferGeometry();
     geo.setAttribute("position", new Float32BufferAttribute(positions, 3));
-    geo.setAttribute("aOrbit", new Float32BufferAttribute(seeds, 4));
+    geo.setAttribute("aOrbit", new Float32BufferAttribute(orbits, 4));
+    geo.setAttribute("aFlight", new Float32BufferAttribute(rates, 1));
+    geo.setAttribute("aPhase", new Float32BufferAttribute(phases, 1));
     return geo;
   }, [count]);
 
   const uniforms = useMemo(
-    () => new Uniforms({ uTime: { value: 0 }, uColor: { value: new Color("#2b2f33") }, uSize: { value: 34 } }),
+    () =>
+      new Uniforms({
+        uTime: { value: 0 },
+        uColor: { value: new Color("#2b2f33") },
+        // The haze the birds fade toward. Matches the scene fog so a distant
+        // bird dissolves into the same air as everything else.
+        uHaze: { value: new Color(FOG_COLOR) },
+        uSize: { value: 34 },
+      }),
     []
   );
 
   useFrame(({ clock, gl }) => {
     uniforms.set("uTime", clock.elapsedTime);
-    uniforms.set("uSize", gl.domElement.height * 0.03);
+    // Metres-to-pixels, so a bird 500m away is genuinely smaller than one
+    // 100m away. This was previously derived from the canvas height with a
+    // fudge factor, which made distant birds the same size as near ones.
+    uniforms.set("uSize", gl.domElement.height * 0.055);
   });
 
   return (
@@ -124,38 +174,49 @@ export function Birds({ count = 14 }: { count?: number }) {
         vertexShader={/* glsl */ `
           uniform float uTime;
           uniform float uSize;
+          // x/z = orbit centre, y = altitude, w = orbit radius
           attribute vec4 aOrbit;
+          // Per-flock orbit rate, and per-bird phase.
+          attribute float aFlight;
+          attribute float aPhase;
+
           varying float vWing;
+          varying float vDepth;
 
           void main() {
-            vec2 centre = aOrbit.xy;
-            float radius = aOrbit.z;
-            float phase = aOrbit.w;
-
-            // Each bird orbits at its own rate and bobs vertically. A little
-            // variation in rate stops the flock looking like a rigid carousel.
-            float rate = 0.10 + fract(aOrbit.w * 7.31) * 0.09;
-            float angle = phase + uTime * rate;
+            float angle = aPhase + uTime * aFlight;
 
             vec3 p = vec3(
-              centre.x + cos(angle) * radius,
-              // Sinusoidal bob, so birds rise and fall through the turn.
-              position.y + sin(uTime * 0.5 + phase * 3.0) * 9.0,
-              centre.y + sin(angle) * radius
+              aOrbit.x + cos(angle) * aOrbit.w,
+              // Vertical bob, so birds rise and fall through the turn rather
+              // than holding a perfectly flat orbit.
+              aOrbit.y + sin(uTime * 0.5 + aPhase * 3.0) * 9.0,
+              aOrbit.z + sin(angle) * aOrbit.w
             );
 
             // Wing flap. Fast and small — at this apparent size a full flap
             // cycle reads as a flicker, so it is deliberately restrained.
-            vWing = sin(uTime * 9.0 + phase * 11.0) * 0.5 + 0.5;
+            vWing = sin(uTime * 9.0 + aPhase * 11.0) * 0.5 + 0.5;
 
             vec4 mv = modelViewMatrix * vec4(p, 1.0);
             gl_Position = projectionMatrix * mv;
-            gl_PointSize = uSize / max(-mv.z, 1.0) * (0.8 + vWing * 0.4);
+
+            // Apparent size, and the depth fade below.
+            float dist = max(-mv.z, 1.0);
+            gl_PointSize = uSize / dist * (0.8 + vWing * 0.4);
+
+            // Distant birds fade toward the haze rather than staying hard black
+            // specks, which is what made them read as dirt on the lens in the
+            // opening bird's-eye — where the nearest flock is over 900m away.
+            vDepth = 1.0 - smoothstep(250.0, 1100.0, dist);
           }
         `}
         fragmentShader={/* glsl */ `
           uniform vec3 uColor;
+          uniform vec3 uHaze;
           varying float vWing;
+          varying float vDepth;
+
           void main() {
             vec2 uv = gl_PointCoord - 0.5;
 
@@ -170,7 +231,14 @@ export function Birds({ count = 14 }: { count?: number }) {
 
             float a = clamp(body + wing, 0.0, 1.0);
             if (a < 0.02) discard;
-            gl_FragColor = vec4(uColor, a * 0.85);
+            // Fading out entirely past 1.1km. A bird at that range is two or
+            // three pixels across; drawing it as a hard dark dot reads as sensor
+            // noise rather than as an animal.
+            a *= vDepth;
+            // Toward the haze colour as it recedes, so a distant bird is a pale
+            // smudge in the air rather than a black speck.
+            vec3 color = mix(uHaze, uColor, vDepth);
+            gl_FragColor = vec4(color, a * 0.85);
             #include <colorspace_fragment>
           }
         `}

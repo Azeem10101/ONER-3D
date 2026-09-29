@@ -16,18 +16,18 @@
  *        +Y
  *         |   plume + gas cards, up to ~400m
  *         |   ^^^^^
- *  88m ---+-- [chimney top]  (34, 88, -30)
+ *  66m ---+-- [chimney top]  (24, 66, -18)
  *         |
- *          \ factory pad, levelled to 7.5m
+ *          \ factory pad, levelled to 22m
  *           \____________
  *
- *   terrain radius    1400m
- *   mountain ring     3200m, peaks to 620m
- *   lake centre       (-300, 0, 190), radius 190
- *   factory pad       x[-190..190], z[-150..150]
+ *   terrain radius    600m, coarse skirt to 2470m, no mountains
+ *   lake centre       (-185, 0, 130), radius 95
+ *   factory pad       x[-78..78], z[-66..66], plant scaled 1.45x
  *
- * Camera altitudes run 26m (outro) to 720m (apex). Anything below ~25m puts
- * the camera inside the canopy, which the validator rejects.
+ * Camera altitudes run about -6m (underwater outro) to 402m (apex). Over LAND
+ * anything below ~20m puts the camera inside the canopy, which the validator
+ * rejects; the final act is deliberately underwater.
  *
  * ## The beats
  *
@@ -52,7 +52,7 @@
  * would stall the ending.
  */
 
-import { WORLD as WORLD_LAYOUT } from "./world";
+import { WORLD as WORLD_LAYOUT, plumeAxisAt } from "./world";
 
 export type Vec3 = readonly [number, number, number];
 
@@ -100,8 +100,15 @@ export const WORLD = {
   get terrainRadius() {
     return WORLD_LAYOUT.terrainRadius;
   },
-  get mountainRadius() {
-    return WORLD_LAYOUT.mountainRadius;
+  /**
+   * The horizon re-export. Formerly `mountainRadius`, which described where a
+   * mountain ring sat. There is no mountain ring any more — the ridge lived
+   * inside `terrainHeight()` and was removed — so this is the skirt's outer
+   * edge. Kept under a layout-neutral name because Timeline's re-export block
+   * exists to give components one import for the whole world.
+   */
+  get skirtRadius() {
+    return WORLD_LAYOUT.skirtRadius;
   },
 } as const;
 
@@ -210,6 +217,21 @@ export const SHOTS: readonly Shot[] = [
     fov: [44, 40],
     ease: "inOutSine",
   },
+  // The five `rise-*` shots climb the plume.
+  //
+  // Their targets come from `plumeAxisAt()` rather than hand-typed numbers, and
+  // that is a correction rather than a refactor. The plume leans DOWNWIND, away
+  // from the stack and toward +x, with an offset that grows as the square of
+  // height. The old keyframes marched steadily toward -x instead — from x=24
+  // at the stack to x=-4 at the top — so the camera was climbing through clear
+  // air while the smoke it was supposed to be inspecting drifted further and
+  // further out of frame. Over a 190m column that is tens of metres of error,
+  // and it is a very plausible contributor to "the smoke is not moving": the
+  // camera was not watching it.
+  //
+  // `plumeAxisAt` returns the centre of the column, and each camera position
+  // sits back along +z from it so the smoke has air around it in frame rather
+  // than filling the lens edge to edge.
   {
     id: "rise-co2",
     label: "Following the plume - CO2",
@@ -217,12 +239,9 @@ export const SHOTS: readonly Shot[] = [
     to: 0.42,
     position: [
       [4, 62, 66],
-      [18, 102, 54],
+      [26, 104, 58],
     ],
-    target: [
-      [24, 44, -18],
-      [22, 100, -18],
-    ],
+    target: [plumeAxisAt(80), plumeAxisAt(122)],
     fov: [40, 42],
     ease: "inOutSine",
     card: "co2",
@@ -233,13 +252,10 @@ export const SHOTS: readonly Shot[] = [
     from: 0.42,
     to: 0.51,
     position: [
-      [18, 102, 54],
-      [12, 142, 46],
+      [26, 104, 58],
+      [36, 148, 50],
     ],
-    target: [
-      [22, 100, -18],
-      [16, 140, -18],
-    ],
+    target: [plumeAxisAt(122), plumeAxisAt(166)],
     fov: [42, 43],
     ease: "inOutSine",
     card: "co",
@@ -250,13 +266,10 @@ export const SHOTS: readonly Shot[] = [
     from: 0.51,
     to: 0.6,
     position: [
-      [12, 142, 46],
-      [4, 182, 38],
+      [36, 148, 50],
+      [48, 192, 42],
     ],
-    target: [
-      [16, 140, -18],
-      [8, 180, -18],
-    ],
+    target: [plumeAxisAt(166), plumeAxisAt(210)],
     fov: [43, 43],
     ease: "inOutSine",
     card: "no2",
@@ -267,30 +280,32 @@ export const SHOTS: readonly Shot[] = [
     from: 0.6,
     to: 0.69,
     position: [
-      [4, 182, 38],
-      [-4, 220, 32],
+      [48, 192, 42],
+      [62, 228, 44],
     ],
-    target: [
-      [8, 180, -18],
-      [0, 218, -18],
-    ],
+    target: [plumeAxisAt(210), plumeAxisAt(248)],
     fov: [43, 44],
     ease: "inOutSine",
     card: "so2",
   },
   {
+    // The last of the five, and the one that used to go wrong.
+    //
+    // The column tops out at y=256 and `plumeAxisAt` clamps to that, so a
+    // target requested higher than 256 silently resolves to the very top. The
+    // camera then kept climbing past it — 268m against a 256m target — and the
+    // shot ended looking DOWN at the dissipating smoke from above, at a pitch
+    // that passed through dead level. The plume visibly dissolving is the point
+    // of the shot, so the camera stays below the top and looks up into it.
     id: "rise-pm25",
     label: "Following the plume - PM2.5",
     from: 0.69,
     to: 0.78,
     position: [
-      [-4, 220, 32],
-      [-10, 252, 28],
+      [62, 228, 44],
+      [72, 234, 56],
     ],
-    target: [
-      [0, 218, -18],
-      [-4, 250, -18],
-    ],
+    target: [plumeAxisAt(248), plumeAxisAt(256)],
     fov: [44, 46],
     ease: "inOutSine",
     card: "pm25",
@@ -301,13 +316,13 @@ export const SHOTS: readonly Shot[] = [
     from: 0.78,
     to: 0.82,
     position: [
-      [-10, 252, 28],
+      [72, 234, 56],
       [-96, 402, 268],
     ],
-    target: [
-      [-4, 250, -18],
-      [-40, 60, 40],
-    ],
+    // Picks up where the last rise shot left off, then swings back and up to
+    // look down the length of the column from above — the turn that reveals the
+    // lake beyond it.
+    target: [plumeAxisAt(256), [-40, 60, 40]],
     fov: [46, 45],
     ease: "inOutCubic",
   },

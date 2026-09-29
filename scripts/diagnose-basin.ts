@@ -13,7 +13,7 @@
  */
 
 import { terrainHeight, padInfluence, WORLD } from "../src/scene/world";
-import { fbm, ridgedFbm, smoothstep } from "../src/scene/noise";
+import { fbm, smoothstep } from "../src/scene/noise";
 
 console.log("\nHeight attribution around the lake\n" + "=".repeat(78));
 
@@ -43,9 +43,12 @@ for (let i = 0; i < 6000; i++) {
 
   const baseNoise = fbm(x * 0.0019, z * 0.0019, 4) * 13;
   const distance = Math.hypot(x, z);
-  const mountainWeight = smoothstep(WORLD.terrainRadius * 0.75, WORLD.mountainRadius * 0.55, distance);
+  // Mirrors the far-field term in terrainHeight(). There is no ridge any more.
+  const farField = smoothstep(WORLD.terrainRadius * 0.8, WORLD.skirtRadius * 0.72, distance);
   const mountainTerm =
-    mountainWeight > 0.001 ? ridgedFbm(x * 0.0011, z * 0.0011, 5) * WORLD.mountainHeight * mountainWeight : 0;
+    farField > 0.001
+      ? (fbm(x * 0.00042, z * 0.00042, 3) * 0.5 + 0.5 - 0.35) * WORLD.farFieldHeight * farField
+      : 0;
 
   const lakeDx = x - WORLD.lakeCentre[0];
   const lakeDz = z - WORLD.lakeCentre[2];

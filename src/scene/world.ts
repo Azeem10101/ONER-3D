@@ -42,7 +42,7 @@
  * a landscape that is too wide makes everything in it look like a toy.
  */
 
-import { fbm, ridgedFbm, smoothstep, clamp } from "./noise";
+import { fbm, smoothstep, clamp } from "./noise";
 import type { Vec3 } from "./timeline";
 
 export const WORLD = {
@@ -52,11 +52,12 @@ export const WORLD = {
   /**
    * Half-extents of the levelled industrial pad, in metres.
    *
-   * Only slightly larger than the factory's own ~72×62m footprint. The
-   * previous 190×150 pad was a clearing three times the size of the building
-   * standing in it, which read as an empty plain with a shed on it.
+   * Grown from 62×52 alongside the factory itself. The pad has to track the
+   * building: too small and the plant spills over the edge of its own
+   * levelled shelf, too large and the clearing reads as an empty plain with a
+   * shed on it. check-layout.ts asserts both directions.
    */
-  factoryPadHalf: { x: 62, z: 52 } as const,
+  factoryPadHalf: { x: 78, z: 66 } as const,
   /**
    * Height of the pad relative to the surrounding jungle floor. Industrial
    * sites are cut flat and often raised, and a visible shelf edge reads as
@@ -69,18 +70,42 @@ export const WORLD = {
   factoryPadHeight: 22,
 
   // --- The chimney the camera follows ---------------------------------------
-  /** LOCAL coordinates: the chimney base sits on the main hall's roof. */
+  /**
+   * LOCAL, PRE-SCALE coordinates: the chimney base sits on the main hall's
+   * roof, and the stack mouth is 30m above it.
+   *
+   * "Pre-scale" is the important qualifier. <Factory> applies
+   * `WORLD.factoryScale` to its whole group, and it divides these values by
+   * that same number when building the stack geometry — so the stack lands at
+   * exactly these world coordinates no matter how the plant is resized.
+   *
+   * That is deliberate: the plume, all six `rise-*` camera shots, and
+   * `plumeAxisAt()` are keyed to the stack mouth. Anchoring the chimney in
+   * world space rather than local space is what lets the factory grow from
+   * 72×62m to 104×90m without a single camera keyframe being retimed.
+   */
   chimneyBase: [24, 14, -18] as Vec3,
   /** LOCAL coordinates of the stack mouth. */
   chimneyTop: [24, 44, -18] as Vec3,
   /**
    * World-space stack mouth: local y plus the pad height, since the factory
-   * is offset onto the pad when composed in <Environment>.
+   * is offset onto the pad when composed in <Environment>. Unchanged by
+   * `factoryScale` — see above.
    */
   chimneyTopWorld: [24, 66, -18] as Vec3,
 
-  /** Height of the plume above the chimney mouth. */
+  /**
+   * Height of the plume above the chimney mouth.
+   *
+   * The downward lean coefficient below (0.16) must stay in step with the
+   * vertex shader in Plume.tsx, or the camera stops tracking the smoke and
+   * starts tracking empty air beside it. That coupling is why the axis is
+   * exposed as a function rather than left as a number in a keyframe.
+   */
   plumeHeight: 190,
+  /** How far the plume leans downwind, as a fraction of height per life². */
+  plumeLeanX: 0.16,
+  plumeLeanZ: 0.06,
 
   // --- Lake -----------------------------------------------------------------
   /**
@@ -97,21 +122,150 @@ export const WORLD = {
   // --- Terrain --------------------------------------------------------------
   /** Radius of the fully detailed terrain. A coarse skirt fills beyond it. */
   terrainRadius: 600,
+
   /**
-   * Height of the far ridge line, in metres.
+   * How far out the coarse skirt reaches.
    *
-   * 430m at 1900m subtends about 13 degrees — a band on the horizon. Taller or
-   * closer and the range stops being a horizon and becomes a backdrop the
-   * camera is apparently standing next to.
+   * There are no mountains. This number exists only so the skirt's outer edge
+   * is far enough that atmospheric fog has fully dissolved it: at
+   * FOG_DENSITY = 0.00085 the fog reaches 97% at this distance, so the seam
+   * between "terrain" and "sky" is a flat wash of haze rather than a visible
+   * edge. Pulling it in makes the edge show.
    */
-  mountainHeight: 430,
-  /** How far out the mountain ring sits. */
-  mountainRadius: 1900,
+  skirtRadius: 2470,
+  /**
+   * Maximum height of the far plain, in metres above the base terrain.
+   *
+   * A gentle swell, not a ridge. See the far-field term in `terrainHeight()`.
+   */
+  farFieldHeight: 130,
 
   // --- Vegetation -----------------------------------------------------------
   /** No trees inside the pad, plus a margin for the treeline. */
   jungleInnerRadius: 0,
+
+  // --- Factory size ---------------------------------------------------------
+  /**
+   * Uniform scale applied to the procedural plant.
+   *
+   * The factory is authored once in local coordinates and scaled here rather
+   * than by rewriting every dimension in Factory.tsx, so the silhouette and the
+   * numbers that must agree with it (the chimney, the pad, the camera path) can
+   * never drift apart. Resizing the plant is then a one-line change that the
+   * layout checks can verify.
+   *
+   * 1.45 puts the main hall at 64m long and the stack 44m above the roof, on a
+   * footprint of about 104×90m. Against a 600m terrain radius and a 190m lake
+   * that reads as a plant with real presence rather than a shed on a plain,
+   * which is what the previous 72×62m footprint came across as.
+   */
+  factoryScale: 1.45,
 } as const;
+
+/**
+ * World-space XZ of the plume's centreline at a given altitude.
+ *
+ * The plume is not vertical. The vertex shader applies a downwind lean that
+ * grows with the square of height, so by the top of the column the smoke is
+ * tens of metres from directly above the stack. The `rise-*` camera shots are
+ * supposed to climb alongside that column, and they used to do it with
+ * hand-typed keyframes that drifted the wrong way — the plume leans toward +x
+ * while the keyframes marched toward -x, so the camera was climbing through
+ * clear air a growing distance from the smoke it was supposed to be
+ * inspecting.
+ *
+ * Deriving the shots from this function instead means the camera is always
+ * genuinely beside the plume. It also means changing the lean coefficients or
+ * the scale moves the camera and the smoke together.
+ *
+ * @param altitude World-space Y to sample the column at.
+ * @returns `[x, y, z]` in world space. Y is clamped to the column's extent, so
+ *   a caller can pass an altitude outside the plume and still get a sane point
+ *   on the axis.
+ */
+export function plumeAxisAt(altitude: number): Vec3 {
+  const base = WORLD.chimneyTopWorld[1];
+  const top = base + WORLD.plumeHeight;
+  const y = clamp(altitude, base, top);
+  // life in the vertex shader is 0 at the stack mouth and 1 at the top of the
+  // column; the lean is life², matching Plume.tsx exactly.
+  const life = (y - base) / WORLD.plumeHeight;
+  const lean = life * life * WORLD.plumeHeight;
+  return [
+    WORLD.chimneyTopWorld[0] + lean * WORLD.plumeLeanX,
+    y,
+    WORLD.chimneyTopWorld[2] + lean * WORLD.plumeLeanZ,
+  ];
+}
+
+/**
+ * Summary statistics of the terrain, measured rather than assumed.
+ *
+ * The forest's treeline used to be a hand-typed constant (`ground > 320`),
+ * written when the landscape's base offset and noise amplitudes were different
+ * values. It was never revisited, so after those numbers changed the threshold
+ * ended up above the highest ground in the world and the treeline silently
+ * stopped existing — trees grew to the top of the highest hill with bare rock
+ * nowhere in sight.
+ *
+ * Anything that needs a number *relative to the terrain* should take it from
+ * here. Memoised because it samples the heightfield, which is far too expensive
+ * to do per scattered tree, and because every caller wants the same value.
+ *
+ * The treeline is the upper quartile of dry-land height plus a margin: real
+ * forest gives way to scrub and rock well before the summit, and taking a
+ * quantile rather than the maximum means one freak hilltop cannot drag the
+ * whole forest line up with it.
+ */
+let _terrainStats: TerrainStats | null = null;
+
+export type TerrainStats = {
+  /** Lowest dry ground outside the lake, in metres. */
+  min: number;
+  /** Highest ground within the detailed terrain, in metres. */
+  max: number;
+  /** Height above which the forest gives way to scrub. */
+  treeline: number;
+  /** Peak-to-peak relief across the detailed terrain. */
+  relief: number;
+};
+
+export function terrainStats(): TerrainStats {
+  if (_terrainStats) return _terrainStats;
+
+  const SAMPLES = 6000;
+  // The lake is excluded: its bed is meant to be below zero, and including it
+  // would drag `min` down by 40m and say nothing about the forest.
+  const dry: number[] = [];
+  for (let i = 0; i < SAMPLES; i++) {
+    // A golden-angle walk rather than a uniform polar grid, so consecutive
+    // samples are never adjacent and the estimate is not biased by a repeating
+    // arc pattern.
+    const angle = i * 2.399963;
+    const radius = Math.sqrt(i / SAMPLES) * WORLD.terrainRadius;
+    const x = Math.cos(angle) * radius;
+    const z = Math.sin(angle) * radius;
+    if (Math.hypot(x - WORLD.lakeCentre[0], z - WORLD.lakeCentre[2]) < WORLD.lakeRadius * 1.5) continue;
+    dry.push(terrainHeight(x, z));
+  }
+  dry.sort((a, b) => a - b);
+
+  const min = dry[0];
+  const max = dry[dry.length - 1];
+  const q3 = dry[Math.floor(dry.length * 0.75)];
+
+  _terrainStats = {
+    min,
+    max,
+    // The upper quartile plus a third of the way to the summit. A forest
+    // typically stops below the highest ground, and this keeps the band of
+    // treeless hilltop visible from every approach without cutting into the
+    // forest that fills the basin.
+    treeline: q3 + (max - q3) * 0.34,
+    relief: max - min,
+  };
+  return _terrainStats;
+}
 
 /**
  * Terrain height at a world position, in metres.
@@ -121,30 +275,68 @@ export const WORLD = {
  * downstream moves with it for free.
  */
 export function terrainHeight(x: number, z: number): number {
-  // Base rolling terrain. Low amplitude and low frequency: this is the ground
-  // the jungle sits on, so it should read as gently undulating, not as
-  // dramatic landscape.
+  // Rolling jungle floor. This is the ground the forest sits on, so it should
+  // read as a basin that undulates — not as dramatic landscape, and not as a
+  // table. Three numbers here are load-bearing and each was found by
+  // measurement rather than by eye; check-scene.ts now asserts all of them.
   //
-  // The +18 offset is load-bearing and was found the hard way. `fbm()` returns
-  // a value centred on ZERO, so the raw terrain averaged 0.6m across the whole
-  // map and ranged -3m to +3m. Since sea level is y = 0, that put two thirds of
-  // the world BELOW the waterline — and the jungle scatter rejects anything
-  // below 1.2m to keep trees out of the lake. The visible result was a forest
-  // reduced to scattered clumps on the highest ground, with bare terrain
-  // between, which read as "two layers of trees with empty land between them".
+  // ## 1. The +28 base offset
   //
-  // 65.6% of the map was being rejected. Lifting the base to average ~18.5m
-  // puts the whole landscape comfortably above the waterline, so the only
-  // sub-waterline ground is now the lake basin itself.
-  let height = 18 + fbm(x * 0.0019, z * 0.0019, 4) * 13;
+  // `fbm()` returns a value centred on ZERO, spanning about -0.43..+0.43. With
+  // no offset at all the terrain therefore straddled the waterline, and the
+  // jungle scatter — which rejects anything below 1.2m to keep trees out of the
+  // lake — threw away 65.6% of the entire map. The visible result was a forest
+  // reduced to scattered clumps on the highest ground with bare terrain between,
+  // which read as "two layers of trees with empty land between them".
+  //
+  // 28m of base is sized against the worst case of the two noise terms below
+  // (roughly 0.43 * 67 = 29m), so the lowest ground anywhere in the world is
+  // still above the waterline. Do not reduce it without re-measuring.
+  //
+  // ## 2. The frequencies
+  //
+  // These were originally 0.0019, chosen when the world was 1400m in radius.
+  // At that scale 2pi/0.0019 = 3300m was a genuine broad swell. The world is now
+  // 600m in radius — 1200m across — so that wavelength never completed even one
+  // cycle and the "landscape" was flat everywhere the camera could see it. That
+  // was hidden by a 430m mountain ridge; once the ridge was removed the
+  // landscape was revealed as a table, with only 30m of dry relief.
+  //
+  // Both frequencies are now sized against the world that exists:
+  //
+  //   0.0075  ->  ~840m wavelength. Two or three hills across the whole map.
+  //             This is the large shape, and what gives the horizon some form.
+  //   0.0210  ->  ~300m wavelength. Individual hills and valleys, which is what
+  //             actually catch light and cast shadow at this viewing scale.
+  //
+  // ## 3. The amplitudes
+  //
+  // Set from the MEASURED span of `fbm` (~0.86), not from an assumed 0..1.
+  // Together these give roughly 40m of broad relief and 18m of fine relief, so
+  // the ground runs from about 0m in the lowest hollows to ~76m on the highest
+  // hilltops. That is a basin, not a plain — and it is nowhere near a mountain
+  // range, which is the point.
+  let height =
+    28 + fbm(x * 0.0075, z * 0.0075, 4) * 46 + fbm(x * 0.021, z * 0.021, 3) * 21;
 
-  // Mountain ridges, far out. Weighted by distance so they only appear
-  // beyond the detailed terrain, which keeps the near ground cheap and calm.
+  // Far field: a broad, low swell beyond the detailed terrain.
+  //
+  // THIS USED TO BE A MOUNTAIN RIDGE, and deleting `Mountains.tsx` did not
+  // remove it. `ridgedFbm(...)*430` lived in the shared height function, so the
+  // coarse skirt mesh was still building a 430m ridged horizon out to 2470m —
+  // that was the "wiggly band" across the upper frame, and it survived the
+  // component deletion because the geometry was never in that component.
+  //
+  // `ridgedFbm` is specifically the wrong primitive here: it folds the noise
+  // into sharp creases by design, which is what makes a ridge read as a ridge.
+  // Plain `fbm` at a wavelength of roughly 15km varies by only a few metres
+  // across the whole visible distance, so the far field reads as a low, soft
+  // plain that dissolves into fog — a horizon, not a skyline.
   const distance = Math.hypot(x, z);
-  const mountainWeight = smoothstep(WORLD.terrainRadius * 0.75, WORLD.mountainRadius * 0.55, distance);
-  if (mountainWeight > 0.001) {
-    const ridge = ridgedFbm(x * 0.0011, z * 0.0011, 5);
-    height += ridge * WORLD.mountainHeight * mountainWeight;
+  const farField = smoothstep(WORLD.terrainRadius * 0.8, WORLD.skirtRadius * 0.72, distance);
+  if (farField > 0.001) {
+    const broad = fbm(x * 0.00042, z * 0.00042, 3) * 0.5 + 0.5;
+    height += farField * (broad - 0.35) * WORLD.farFieldHeight;
   }
 
   // --- Lake basin ---------------------------------------------------------
@@ -253,7 +445,7 @@ export function terrainHeight(x: number, z: number): number {
   // Keep everything from dipping below the water table far away, which would
   // show as odd flat puddles. The floor is below the lake bed so the basin
   // can never be clipped upward.
-  return clamp(height, -WORLD.lakeBasinDepth - 1.5, WORLD.mountainHeight * 1.1);
+  return clamp(height, -WORLD.lakeBasinDepth - 1.5, 18 + WORLD.farFieldHeight + 40);
 }
 
 /** How strongly industrialised the ground is at a point, 0..1. Used to keep

@@ -12,6 +12,7 @@
 
 import { terrainHeight, WORLD } from "../src/scene/world";
 import { sampleCamera, SHOTS } from "../src/scene/timeline";
+import { FOG_DENSITY } from "../src/components/three/Lighting";
 
 let failures = 0;
 let warnings = 0;
@@ -33,8 +34,16 @@ console.log("\nONER-3D layout check\n" + "=".repeat(64) + "\n");
 // --- Pad vs factory -------------------------------------------------------
 console.log("Factory pad");
 const [padX, padZ] = [WORLD.factoryPadHalf.x, WORLD.factoryPadHalf.z];
-// The procedural factory's own footprint, read from its authored geometry.
-const FACTORY_EXTENT = { x: 28, z: 22 };
+// The procedural factory's own footprint, read from its authored geometry and
+// scaled the same way <Factory> scales it. Previously hard-coded at {28, 22},
+// which was the pre-1.45x plant's extent; after the scale-up the building
+// silently grew past the pad it is supposed to sit on and this check would have
+// kept reporting the old margin.
+const FACTORY_EXTENT = { x: 36 * WORLD.factoryScale, z: 31 * WORLD.factoryScale };
+// Rounded for display only. The pad check reports these raw, and
+// `104.39999999999999m` in a pass message reads like a bug even though it is
+// just float multiplication. Kept separate so the arithmetic above stays exact.
+const show = (n: number) => n.toFixed(0);
 
 if (FACTORY_EXTENT.x < padX && FACTORY_EXTENT.z < padZ) {
   const marginX = padX - FACTORY_EXTENT.x;
@@ -46,7 +55,11 @@ if (FACTORY_EXTENT.x < padX && FACTORY_EXTENT.z < padZ) {
   } else if (marginX > 60) {
     warn(`pad is ${marginX.toFixed(0)}/${marginZ.toFixed(0)}m larger than the factory — reads as empty ground`);
   } else {
-    pass(`pad ${padX}×${padZ}m wraps the ${FACTORY_EXTENT.x * 2}×${FACTORY_EXTENT.z * 2}m factory with ${marginX}/${marginZ}m margin`);
+    pass(
+      `pad ${padX}×${padZ}m wraps the ${show(FACTORY_EXTENT.x * 2)}×${show(
+        FACTORY_EXTENT.z * 2
+      )}m factory with ${show(marginX)}/${show(marginZ)}m margin`
+    );
   }
 } else {
   fail("the factory extends beyond its own pad");
@@ -124,21 +137,40 @@ if (openingDistance < WORLD.terrainRadius * 0.6) {
   pass(`opening camera ${openingDistance.toFixed(0)}m out, beyond the ${WORLD.terrainRadius}m terrain`);
 }
 
-// Mountains were removed: at this world scale they subtended 22° at the
-// opening shot, filling a quarter of the frame exactly where the plant and
-// lake need to be. The horizon is now open sky, so there is nothing to check —
-// but the check is kept as a reminder that if mountains come back, this is the
-// number that has to stay small.
-const mountainAngular = (
-  (Math.atan(
-    WORLD.mountainHeight / Math.max(1, WORLD.mountainRadius - Math.hypot(opening.position[0], opening.position[2]))
-  ) *
-    180) /
-  Math.PI
-).toFixed(1);
-pass(
-  `mountains are not rendered; if reinstated, ${WORLD.mountainHeight}m at ${WORLD.mountainRadius}m would subtend ${mountainAngular}° — too much`
-);
+// The horizon must be FLAT. The wiggly band that survived the deletion of
+// Mountains.tsx was a `ridgedFbm` term inside terrainHeight(), which the skirt
+// mesh was still building out to 2470m. A ridge is exactly what must not come
+// back, so the assertion is on the shape of the far field rather than on a
+// component existing: measure the height variation over the skirt and reject
+// anything with a sharp silhouette.
+let skirtMin = Infinity;
+let skirtMax = -Infinity;
+for (let i = 0; i < 4000; i++) {
+  const angle = (i / 4000) * Math.PI * 2;
+  const r = WORLD.terrainRadius * 0.8 + (i / 4000) * (WORLD.skirtRadius - WORLD.terrainRadius * 0.8);
+  const h = terrainHeight(Math.cos(angle) * r, Math.sin(angle) * r);
+  skirtMin = Math.min(skirtMin, h);
+  skirtMax = Math.max(skirtMax, h);
+}
+const skirtRelief = skirtMax - skirtMin;
+if (skirtRelief > 220) {
+  fail(
+    `the far field has ${skirtRelief.toFixed(0)}m of relief — a ridged horizon will read as a wiggly band again`
+  );
+} else {
+  pass(
+    `far field is a ${skirtRelief.toFixed(0)}m swell out to ${WORLD.skirtRadius}m — a horizon, not a ridge`
+  );
+}
+
+// The skirt's outer edge must be far enough that fog has dissolved it, or the
+// seam between terrain and sky shows as a hard line.
+const skirtFog = 1 - Math.exp(-Math.pow(FOG_DENSITY * WORLD.skirtRadius, 2));
+if (skirtFog < 0.9) {
+  fail(`the skirt's outer edge is only ${(skirtFog * 100).toFixed(0)}% fogged — the seam will be visible`);
+} else {
+  pass(`the skirt's outer edge is ${(skirtFog * 100).toFixed(0)}% fogged — the seam is hidden`);
+}
 
 // The final shot must be close enough to the outfall for the contamination
 // reveal to be at full strength, or the whole proximity effect is wasted.

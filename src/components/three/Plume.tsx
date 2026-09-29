@@ -91,10 +91,14 @@ const vertexShader = /* glsl */ `
     float radius = pow(life, 0.72) * uSpread * aDrift;
     float angle = aAngle + uTime * aSpin * 3.0 + wander * 0.9;
 
+    // Lateral wander. Scaled against the layer's own spread so a wide layer
+    // wanders proportionally further — an absolute offset that looked right on
+    // a 20m core is invisible on a 74m outer layer.
+    float wanderAmount = uSpread * 0.28;
     vec3 pos = vec3(
-      cos(angle) * radius + wander * 5.0,
+      cos(angle) * radius + wander * wanderAmount,
       life * uHeight,
-      sin(angle) * radius + wanderA * 3.4
+      sin(angle) * radius + wanderA * wanderAmount * 0.7
     );
 
     // The whole column leans downwind, which is the cue that reads as "rising
@@ -112,12 +116,14 @@ const vertexShader = /* glsl */ `
     gl_Position = projectionMatrix * mvPosition;
 
     // Perspective-correct point size, growing with age as the puff expands.
-    // Clamped, because an unclamped size on a near puff can cover the entire
-    // viewport, and a full-screen transparent quad is both a fill-rate problem
-    // and a visual one — it dims everything behind it.
+    // Clamped hard, and the clamp was lowered from 260px in this revision.
+    // A sprite large enough to cover a big fraction of the viewport is both a
+    // fill-rate problem and a visual one: it flattens the region it covers into
+    // a single uniform patch, which is precisely the featureless look the
+    // plume is trying not to have.
     gl_PointSize = min(
       aSize * (0.32 + life * 1.5) * uPixelScale / max(-mvPosition.z, 1.0),
-      260.0
+      150.0
     );
   }
 `;
@@ -154,6 +160,22 @@ const fragmentShader = /* glsl */ `
     float density = pow(1.0 - d, 1.9);
     density *= 0.75 + 0.25 * cos(atan(r.y, r.x) * 3.0 + vSeed * 9.0);
 
+    // PER-PARTICLE DENSITY. Load-bearing, and the reason the plume has any
+    // structure at all.
+    //
+    // Every sprite was previously the same density, so several hundred of them
+    // summed to a flat, fully saturated grey mass. A uniform mass has no
+    // features, and a featureless mass reads as completely still no matter how
+    // fast it is moving — which is exactly what was reported. Varying density
+    // per particle produces billows: clumps of dense smoke with thinner gaps
+    // between them, and those clumps are what the eye tracks as they rise and
+    // shear apart.
+    float weight = 0.18 + 0.82 * fract(vSeed * 43.758);
+    // A second, coarser weight so the variation is clumpy rather than merely
+    // per-puff random. Real plumes have coherent dense and thin regions.
+    weight *= 0.45 + 0.55 * fract(vSeed * 7.113 + 0.5);
+    density *= weight;
+
     // FAKE VOLUMETRIC LIGHTING.
     //
     // Treat the sprite as if it were a sphere: the surface normal at this
@@ -179,8 +201,14 @@ const fragmentShader = /* glsl */ `
     // smoke, which is what welds the plume into the sky.
     color = mix(color, uFogColor, smoothstep(0.15, 1.0, vHeight01) * 0.72);
 
-    // Opacity: born opaque, and thinning as it expands and dilutes.
-    float fade = smoothstep(0.0, 0.05, vLife) * (1.0 - smoothstep(0.28, 0.95, vLife));
+    // Opacity, and the budget that goes with it.
+    //
+    // The fade curve is not just a birth/death envelope any more: the
+    // dilution term makes the base of the column meaningfully denser than the
+    // top, which is both what real smoke does and what stops the plume reading
+    // as a uniform tube.
+    float fade = smoothstep(0.0, 0.06, vLife) * (1.0 - smoothstep(0.22, 0.95, vLife));
+    fade *= 1.0 - vLife * 0.45;
 
     float alpha = density * fade * uOpacity;
 
@@ -202,24 +230,26 @@ type LayerConfig = {
 };
 
 export function Plume({ quality }: { quality: QualitySettings }) {
-  // Three layers, not two.
+  // Three layers, and the opacity numbers are a BUDGET, not a taste setting.
   //
-  // The first version used two very large, very faint sprites for the outer
-  // layer — 165m across at 0.17 opacity. At that size each sprite covers most
-  // of the screen, so the "motion" was a slow change in a wall of grey and the
-  // plume read as completely static. Layer count was the wrong lever; the
-  // sizes were far too large.
+  // Several hundred sprites overlap along any view ray through the column, so
+  // accumulated alpha is 1 - Π(1 - αᵢ). Once that product saturates, the plume
+  // is a solid grey mass — and a solid mass has no internal features, so it
+  // reads as completely static no matter how fast the particles are travelling.
+  // That is the bug the previous two rounds missed: raising the rise speed
+  // could not help, because there was nothing in the image for the speed to
+  // show up in.
   //
-  // The outer layer is now many small puffs, so the drift is legible as
-  // discrete movement. A dense core, a mid layer, and a wide diffuse layer.
+  // These values are set so the densest clumps land around 0.75-0.9 and the
+  // thinner regions around 0.3, which is where structure becomes visible.
   const layers = useMemo<LayerConfig[]>(
     () => [
       {
         // Core: tight, dark, and relatively fast. This is the column.
         count: quality.tier === "low" ? 240 : quality.tier === "medium" ? 460 : 780,
-        size: [12, 30],
-        opacity: 0.62,
-        spread: 22,
+        size: [10, 24],
+        opacity: 0.26,
+        spread: 20,
         height: WORLD.plumeHeight,
         speed: [0.045, 0.09],
         blending: undefined,
@@ -228,9 +258,9 @@ export function Plume({ quality }: { quality: QualitySettings }) {
         // Mid: the main body of the plume, and where most of the visible
         // motion comes from.
         count: quality.tier === "low" ? 200 : quality.tier === "medium" ? 400 : 680,
-        size: [26, 62],
-        opacity: 0.34,
-        spread: 44,
+        size: [20, 46],
+        opacity: 0.15,
+        spread: 40,
         height: WORLD.plumeHeight * 0.9,
         speed: [0.03, 0.062],
         blending: undefined,
@@ -239,9 +269,9 @@ export function Plume({ quality }: { quality: QualitySettings }) {
         // Outer: thin, wide, slow. Legible as motion only because there are
         // many of them and they are small — which is the point.
         count: quality.tier === "low" ? 120 : quality.tier === "medium" ? 240 : 400,
-        size: [55, 120],
-        opacity: 0.15,
-        spread: 78,
+        size: [42, 92],
+        opacity: 0.065,
+        spread: 74,
         height: WORLD.plumeHeight * 1.15,
         speed: [0.02, 0.042],
         blending: undefined,
@@ -293,9 +323,14 @@ function PlumeLayer({ layer, sunDirection }: { layer: LayerConfig; sunDirection:
       // More spin than before, so particles visibly orbit as they rise rather
       // than translating in a straight line.
       aSpin[i] = (random() - 0.5) * 1.4;
-      // Wider dispersion for the puffs that rise fastest, which is what
-      // gives the column a soft outer edge rather than a defined cone.
-      aDrift[i] = 0.45 + random() * 1.1;
+      // Dispersion, and deliberately WIDE.
+      //
+      // A narrow range (it was 0.45-1.55) puts every particle at a similar
+      // radius for a given age, so the column comes out as a smooth cone with
+      // a clean edge — a shape, not a billow. Spanning 0.15-2.2 puts a dense
+      // population near the axis and a thin scatter far outside it, which is
+      // what gives the plume a ragged, irregular envelope.
+      aDrift[i] = 0.15 + Math.pow(random(), 1.6) * 2.05;
       aSize[i] = layer.size[0] + random() * (layer.size[1] - layer.size[0]);
       aSeed[i] = random();
     }

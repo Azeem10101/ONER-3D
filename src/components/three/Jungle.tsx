@@ -4,7 +4,7 @@ import { useMemo } from "react";
 import { Instance, Instances } from "@react-three/drei";
 import { range } from "@/scene/random";
 import { createRandom } from "@/scene/random";
-import { WORLD, terrainHeight, padInfluence } from "@/scene/world";
+import { WORLD, terrainHeight, terrainStats, padInfluence } from "@/scene/world";
 import type { QualitySettings } from "@/scene/quality";
 
 /**
@@ -156,14 +156,24 @@ export function Jungle({ quality }: { quality: QualitySettings }) {
       if (ground < 1.2) continue;
 
       // Nothing on a cliff.
+      // Slope, sampled over 7m either side.
+      //
+      // The threshold is 0.62 (about 32 degrees), which is a real cliff rather
+      // than a hill — trees do grow on steep jungle slopes, and the previous
+      // value rejected almost nothing even before the terrain was reshaped.
       const slope = Math.abs(terrainHeight(x + 7, z) - terrainHeight(x - 7, z)) / 14;
       if (slope > 0.62) continue;
 
       // Upper elevations are above the treeline in a real range, and the
-      // reference frames show bare rock and grass up there. The threshold is
-      // relative to the base terrain (see the +18 offset in world.ts), so this
-      // is "well above the surrounding jungle" rather than an absolute.
-      if (ground > 320) continue;
+      // reference frames show bare rock and grass up there.
+      //
+      // Derived from the terrain's own statistics rather than typed in, because
+      // the base offset and the noise amplitudes in world.ts are both tuned
+      // against measured ranges — and when those changed, this constant did not.
+      // It sat at 320m against a landscape whose highest ground was 76m, so it
+      // rejected nothing at all and the treeline silently stopped existing.
+      // `terrainStats()` is the same function check-scene.ts uses to verify it.
+      if (ground > terrainStats().treeline) continue;
 
       // CLUMPING. This is the single biggest contributor to a forest looking
       // like a forest. A uniform scatter is instantly recognisable as

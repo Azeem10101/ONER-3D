@@ -53,6 +53,45 @@ import type { QualitySettings } from "@/scene/quality";
  *   - THIN-FILM SHEEN. A very subtle iridescence near the source, where
  *     floating oil is thinnest. Kept almost invisible on purpose; at any
  *     higher strength it reads as a rainbow effect.
+ *
+ * ## Why the water read as static, and what actually fixed it
+ *
+ * Three separate causes, found in order, because fixing any one of them alone
+ * changed nothing visible. This is worth writing down, since the obvious
+ * diagnosis — "the waves are too small" — was wrong twice.
+ *
+ * 1. ALPHA SATURATION, in the plume, not here. Worth mentioning because it is
+ *    the same failure mode: hundreds of overlapping semi-transparent sprites
+ *    summed to a flat mass, and a flat mass cannot show motion.
+ *
+ * 2. FRESNEL CANNOT CARRY MOTION. This is the non-obvious one. The obvious
+ *    term for "how reflective is this water" is Schlick fresnel on the view
+ *    angle — and looking down at a lake, that angle sits near 0.95 no matter
+ *    how the surface tilts. So fresnel was a near-constant 0.10 and the
+ *    reflection never changed, however violently the waves moved. Raising the
+ *    wave amplitudes could only make the normals swing more, which changes
+ *    nothing when the output term is insensitive to them. The fix was to
+ *    sample a sky gradient along the REFLECTED VECTOR, which swings 20 degrees
+ *    for every 10 degrees of normal tilt and is therefore very sensitive to
+ *    exactly the motion we want to see.
+ *
+ * 3. TWO INDEPENDENT POLLUTION DRIVERS. The surface accumulated contamination
+ *    from elapsed time while the fish used scroll progress, so the two could
+ *    disagree completely — fish swimming happily under an ochre surface. Both
+ *    now read `pollutionAt()`.
+ *
+ * ## Amplitude and wavelength are one decision
+ *
+ * The temptation with "the water is not moving" is to raise the wave
+ * amplitudes. That is backwards. The normal comes from the gradient, so what
+ * the eye sees is amplitude TIMES frequency, and a large amplitude at a short
+ * wavelength produces a normal that swings tens of degrees between adjacent
+ * pixels. That is aliased noise — visual grit that reads as a dirty lens, not
+ * as motion, because there is no coherent shape to follow.
+ *
+ * So the two are coupled deliberately: long wavelengths carry large amplitude
+ * (gentle slopes, clearly readable shapes) and short wavelengths carry small
+ * amplitude (fine texture only). See `waves()`.
  */
 
 const vertexShader = /* glsl */ `
@@ -65,14 +104,20 @@ const vertexShader = /* glsl */ `
   void main() {
     vec4 world = modelMatrix * vec4(position, 1.0);
 
-    // A long, low swell. Real lake surfaces are not flat even out of wind;
-    // without this the fresnel term has nothing to break up and the whole
-    // lake reads as a mirror.
-    world.y += sin(world.x * 0.021 + uTime * 0.42) * uSwell
-             + sin(world.z * 0.017 - uTime * 0.31) * uSwell * 0.7;
+    // A long, low swell, evaluated on WORLD XZ.
+    //
+    // This is the same long-wavelength band the fragment shader uses for the
+    // swell, deliberately in step with it: the vertex pass displaces the
+    // geometry and the fragment pass shades the normal, and if the two
+    // disagreed the surface would visibly tear. It matters much more than it
+    // used to because the lake is now a subdivided radial grid rather than a
+    // two-triangle disc, so this displacement actually has somewhere to go.
+    vec2 p = world.xz;
+    world.y += (sin(p.x * 0.105 + p.y * 0.048 + uTime * 0.62) * 0.42
+              + sin(p.x * 0.061 - p.y * 0.089 - uTime * 0.44) * 0.30) * uSwell;
 
     vWorld = world.xyz;
-    vSurfaceUv = world.xz;
+    vSurfaceUv = p;
 
     gl_Position = projectionMatrix * viewMatrix * world;
   }
@@ -85,14 +130,26 @@ const fragmentShader = /* glsl */ `
   uniform vec3  uSunDirection;
   uniform vec3  uDeepColor;
   uniform vec3  uShallowColor;
-  uniform vec3  uSkyColor;
+  uniform vec3  uSkyHorizon;
+  uniform vec3  uSkyZenith;
+  uniform vec3  uSunColor;
   uniform vec3  uContaminant;
   uniform vec3  uFoamColor;
   uniform vec3  uFogColor;
   uniform float uFogDensity;
-  uniform float uContamination;  // 0..1, grows with time AND with camera proximity
+  uniform float uContamination;  // 0..1, a pure function of scroll progress
   uniform float uClarity;        // 1 = clean, falls as contamination rises
   uniform float uRadius;
+  /**
+   * 0 above the surface, 1 when the camera is well under it.
+   *
+   * Drives the from-below terms at the end of the shader. Driven by the
+   * camera's actual altitude rather than by scroll progress, because being
+   * underwater is a property of where the camera is — tying it to the timeline
+   * would allow a dry view from below, which is worse than having no
+   * underwater treatment at all.
+   */
+  uniform float uUnderwater;
 
   varying vec3 vWorld;
   varying vec2 vSurfaceUv;
@@ -115,6 +172,15 @@ const fragmentShader = /* glsl */ `
     );
   }
 
+  // Three octaves, output roughly in [0, 0.875].
+  //
+  // The call count here matters more than it looks: waves() is evaluated FIVE
+  // times per fragment for the central-difference normal, so every octave
+  // added to this function costs five evaluations across the whole surface.
+  // The lake covers most of the frame for the entire final act, so this is the
+  // single most expensive shader in the project. Three octaves is the measured
+  // compromise — a fourth is visible in the swell's silhouette but not worth
+  // the frame time.
   float fbm(vec2 p) {
     float s = 0.0;
     float a = 0.5;
@@ -130,28 +196,45 @@ const fragmentShader = /* glsl */ `
   // Returns a height field; the normal comes from its gradient, which is
   // cheaper than computing three noise samples and differentiating by hand.
   //
-  // AMPLITUDES ARE THE POINT. The previous version returned a field with
-  // amplitudes around 0.5-1.3 over wavelengths of tens of metres, so the
-  // derived normal tilted by at most a few degrees. From 100m up, a surface
-  // that is nearly flat looks completely still — the fresnel term barely
-  // changes, so the reflection does not move, so there is nothing to see.
+  // ## Why the amplitude/wavelength ratio matters more than the amplitude
   //
-  // Short wavelengths with larger amplitude give a normal that genuinely
-  // swings, which is what makes the reflection crawl and the glitter flicker.
-  // Sampled at 1.2m across a 95m lake that is fine, and it is what makes the
-  // water read as water rather than as a blue plane.
+  // What the eye reads as "moving water" is the normal swinging as the surface
+  // undulates, and the normal comes from the gradient dh/dx — which is
+  // amplitude times frequency. An earlier revision raised the amplitudes 5x on
+  // the theory that a flatter-looking surface was the problem. That made it
+  // worse, and the reason is instructive: a large amplitude at a SHORT
+  // wavelength gives a gradient so steep that the normal swings through tens of
+  // degrees between adjacent pixels. That is not water, it is aliased noise —
+  // a field of per-pixel static that reads as visual grit, not as motion,
+  // because there is no coherent shape for the eye to follow.
+  //
+  // So the two are now deliberately coupled. Long wavelengths carry large
+  // amplitude (gentle slopes, clearly readable shapes) and short wavelengths
+  // carry small amplitude (fine texture). Slope stays in a believable range.
+  //
+  // ## Why there are exactly two bands
+  //
+  // Each band exists for a different viewing distance. The swell is ~15-30m
+  // across and is what makes the lake read as moving from 300m up, where the
+  // camera spends the entire approach. The chop is 2-5m and only resolves once
+  // the camera is close, which is the underwater sequence. Wavelengths between
+  // those two bands are what produce fizz rather than either.
   float waves(vec2 p, float t) {
     float h = 0.0;
-    // Chop: short wavelength, large amplitude, fast.
-    h += sin(p.x * 0.42 + p.y * 0.23 + t * 2.10) * 1.35;
-    h += sin(p.x * 0.19 - p.y * 0.51 + t * 1.63) * 1.05;
-    // Swell: long wavelength, slower. Gives the large-scale undulation the
-    // chop rides on.
-    h += (fbm(p * 0.055 + vec2(t * 0.075, -t * 0.052)) - 0.5) * 2.60;
-    // Ripple: very short, small, and fast — the fine texture that catches the
-    // specular highlight and makes it sparkle.
-    h += (fbm(p * 0.34 - vec2(t * 0.24, t * 0.19)) - 0.5) * 0.95;
-    h += (fbm(p * 0.92 + vec2(t * 0.55, -t * 0.41)) - 0.5) * 0.30;
+
+    // --- Swell: long wavelength, the dominant read from altitude ---------
+    // 2pi/0.105 = 60m wavelength. Slope contribution ~0.11.
+    h += sin(p.x * 0.105 + p.y * 0.048 + t * 0.62) * 0.42;
+    h += sin(p.x * 0.061 - p.y * 0.089 - t * 0.44) * 0.30;
+    // Broad noise swell, so the two sine trains do not read as a regular
+    // interference pattern. Slope contribution ~0.10.
+    h += (fbm(p * 0.026 + vec2(t * 0.048, -t * 0.031)) - 0.5) * 1.30;
+
+    // --- Chop: short wavelength, small amplitude, fast -------------------
+    // ~4-8m wavelength. Slope contribution ~0.04 — an eighth of the swell's.
+    // Kept deliberately small; this is texture, not shape.
+    h += sin(p.x * 0.88 + p.y * 0.41 + t * 2.30) * 0.075;
+    h += (fbm(p * 0.30 - vec2(t * 0.26, t * 0.19)) - 0.5) * 0.16;
     return h;
   }
 
@@ -161,34 +244,53 @@ const fragmentShader = /* glsl */ `
     vec3 viewDir = normalize(viewVec);
 
     // --- Surface normal from the wave gradient ---------------------------
-    // Finite differences on the height field. The epsilon is small (0.35m) so
-    // the short-wavelength chop is actually resolved rather than averaged
-    // away — a large epsilon flattens the normal and the water goes still.
-    float e = 0.35;
+    // Central differences, not forward differences.
+    //
+    // Forward differences are cheaper (two extra samples instead of four) but
+    // they systematically bias the slope by half an epsilon, and on a field
+    // that is mostly low-frequency the bias is not evenly distributed — it
+    // varies with the phase, which shows up as a slow shimmer in the
+    // reflection even when the water is genuinely still. Four samples on a
+    // 95m lake is a rounding error against the fill cost of the whole surface.
+    //
+    // Epsilon is 0.5m: comfortably smaller than the shortest wavelength in the
+    // field (2pi/0.88 = 7m) so the chop resolves instead of aliasing, and
+    // comfortably larger than a float's useful precision at 95m.
+    float e = 0.5;
     float hC = waves(p, uTime);
-    float hX = waves(p + vec2(e, 0.0), uTime);
-    float hZ = waves(p + vec2(0.0, e), uTime);
-    vec3 normal = normalize(vec3(-(hX - hC) / e, 1.0, -(hZ - hC) / e));
+    float hX = (waves(p + vec2(e, 0.0), uTime) - waves(p - vec2(e, 0.0), uTime)) / (2.0 * e);
+    float hZ = (waves(p + vec2(0.0, e), uTime) - waves(p - vec2(0.0, e), uTime)) / (2.0 * e);
+    vec3 normal = normalize(vec3(-hX, 1.0, -hZ));
 
     // --- Fresnel ---------------------------------------------------------
     float ndv = max(dot(normal, viewDir), 0.0);
-    // Schlick, with F0 = 0.02, the correct value for water/air.
-    float fresnel = 0.02 + 0.98 * pow(1.0 - ndv, 5.0);
-    // Floated up from the physical value. Strict Schlick at this viewing
-    // angle (100m up, looking down) gives fresnel around 0.02, which is
-    // effectively no reflection at all — physically correct, and visually
-    // indistinguishable from a flat blue plane. Real water is not a perfect
-    // dielectric because of surface roughness, which raises the effective
-    // reflection considerably at these angles.
-    fresnel = 0.10 + 0.90 * pow(1.0 - ndv, 4.0);
+    // Schlick with F0 floored at 0.10 rather than the physical 0.02.
+    //
+    // This floor is a fudge, and worth being honest about. Strict Schlick at
+    // this viewing angle gives ~0.02, which is physically right and visually
+    // useless. Real water is not a perfect dielectric — surface roughness and
+    // sub-pixel capillary waves scatter far more than a smooth Fresnel term
+    // predicts — so effective reflectance from above genuinely is higher than
+    // 2%.
+    float fresnel = 0.10 + 0.90 * pow(1.0 - ndv, 4.0);
 
-    // --- Depth: shallower near the shore ---------------------------------
     // --- Depth: shallower near the shore ---------------------------------
     // Shoreline distance uses the lake centre, passed in as a uniform rather
     // than hard-coded. The old value (-300, 190) was the previous lake's
     // position and would have made the entire depth term meaningless.
     float shoreT = smoothstep(uRadius * 1.05, uRadius * 0.6, length(p - uLakeCentre));
     vec3 bodyColor = mix(uShallowColor, uDeepColor, shoreT);
+
+    // Light reaching the bed and bouncing back up, which is what makes shallow
+    // water look shallow.
+    //
+    // This is a second, independent reason the surface is never flat blue: the
+    // body colour now varies with distance from the shore on top of the
+    // reflection, so the lake has an internal gradient rather than one uniform
+    // tone. Without it, the clean water read as a single sheet of colour with a
+    // reflection painted on it.
+    vec3 bedColour = uShallowColor * (0.55 + 0.45 * shoreT);
+    bodyColor = mix(bodyColor, bodyColor * 0.72 + bedColour * 0.28, 0.6);
 
     // --- Contamination ----------------------------------------------------
     // Radial spread from the outfall, warped by a slowly evolving noise
@@ -214,30 +316,73 @@ const fragmentShader = /* glsl */ `
     float streaks = 0.72 + 0.28 * fbm(p * 0.085 + vec2(uTime * 0.09, uTime * 0.05));
     contam *= streaks * uContamination;
 
-    // --- Surface normal is flattened where the water is contaminated ------
-    // Silt and surfactant damp capillary waves. The visible consequence is
-    // that the polluted area reflects more smoothly than the clean water
-    // around it, which is a real and very recognisable effect.
-    normal = normalize(mix(normal, vec3(0.0, 1.0, 0.0), contam * 0.62));
+    // --- Surface normal is damped where the water is contaminated ----------
+    // Silt and surfactant damp capillary waves. The visible consequence is that
+    // the polluted area reflects more smoothly than the clean water around it,
+    // which is a real and very recognisable effect.
+    //
+    // Held to 0.34 rather than the 0.62 it used to be. That value was actively
+    // hiding the motion: a fully contaminated lake had its normal almost
+    // entirely flattened toward straight-up, which is exactly the state in
+    // which this surface has nothing to show. Polluted water still has a swell.
+    normal = normalize(mix(normal, vec3(0.0, 1.0, 0.0), contam * 0.34));
+
+    // --- Reflected direction ---------------------------------------------
+    // THIS IS THE TERM THAT MAKES WATER LOOK ALIVE, and it is the one that was
+    // missing.
+    //
+    // Fresnel on its own cannot carry the motion. Looking down at a lake, ndv
+    // sits near 0.95 however the surface tilts, so a Schlick term evaluated on
+    // ndv is a near-constant 0.10 and the reflection barely changes. That is
+    // the real reason the water read as static, and no amount of amplitude
+    // tuning fixes it.
+    //
+    // The reflected VECTOR, though, swings enormously: a normal tilted by 10
+    // degrees swings the reflected ray by 20 degrees, which samples a
+    // completely different part of the sky. Sampling a sky gradient along that
+    // direction converts wave motion directly into visible changes in
+    // reflected colour.
+    //
+    // Computed here, AFTER the contamination damping, so a polluted patch
+    // genuinely reflects a smoother, flatter sky than the clean water beside
+    // it rather than merely being tinted over.
+    vec3 reflected = reflect(-viewDir, normal);
+    float upness = clamp(reflected.y, 0.0, 1.0);
+    // Warm hazy horizon into deeper blue overhead, matching the analytic sky in
+    // Sky.tsx so the water reflects the sky that is actually there.
+    vec3 skyRefl = mix(uSkyHorizon, uSkyZenith, pow(upness, 0.55));
+
+    // The sun's glitter path. Two broad lobes rather than one tight one,
+    // because the track of light on water is an extended smear, not a point —
+    // and a tight lobe breaks into isolated aliasing sparkles at any distance.
+    float sunPath = max(dot(reflected, uSunDirection), 0.0);
+    skyRefl += uSunColor * pow(sunPath, 26.0) * 0.55;
+    skyRefl += uSunColor * pow(sunPath, 5.0) * 0.16;
 
     // --- Composite --------------------------------------------------------
     vec3 color = mix(bodyColor, uContaminant, contam * 0.94);
 
-    // Sky reflection, strengthened by the fresnel term and scaled by clarity:
-    // contaminated water is turbid, so it stops behaving like a mirror long
-    // before the colour fully changes. Seeing the reflection die before the
-    // colour arrives is what makes the approach legible as a process.
-    vec3 reflection = uSkyColor * (0.75 + 0.45 * max(dot(normalize(uSunDirection), normal), 0.0));
-    color = mix(color, reflection, fresnel * 0.82 * uClarity);
+    // The sky, reflected along the actual bounce direction, weighted by
+    // fresnel and scaled by clarity: contaminated water is turbid, so it stops
+    // behaving like a mirror well before its colour has fully changed. Seeing
+    // the reflection die before the colour arrives is what makes the pollution
+    // read as a process rather than a switch.
+    color = mix(color, skyRefl, fresnel * 0.88 * uClarity);
 
-    // Sun glitter. TWO lobes — a tight one for the hard sparkle, and a broad
-    // one for the sheen across a larger area. One narrow lobe alone produces
-    // a few isolated bright pixels that read as noise rather than as light on
-    // water.
-    vec3 halfVec = normalize(uSunDirection + viewDir);
-    float spec = max(dot(normal, halfVec), 0.0);
-    color += vec3(1.0, 0.94, 0.84) * pow(spec, 90.0) * 1.8;
-    color += vec3(1.0, 0.95, 0.88) * pow(spec, 14.0) * 0.32;
+    // --- Travelling wave crests -------------------------------------------
+    // The most legible single cue that a surface is moving, and unlike
+    // fresnel it does not care about the viewing angle, so it works from
+    // directly overhead as well as from underwater.
+    //
+    // Derived from the height field itself, so a crest is by construction on a
+    // wave rather than painted on. hC is roughly in [-1, 1] and the band is
+    // narrow, so only the genuine peaks lighten.
+    float crest = smoothstep(0.30, 0.60, hC) * uClarity;
+    color += mix(vec3(0.55, 0.70, 0.74), uFoamColor, 0.35) * crest * 0.15;
+
+    // Shadowed troughs, for the same reason: a wave is as legible by its dark
+    // side as by its lit one.
+    color *= 1.0 - smoothstep(-0.26, -0.56, hC) * 0.17;
 
     // --- Foam and scum -----------------------------------------------------
     // A bright ring hard against the outfall, where effluent is entering
@@ -268,12 +413,39 @@ const fragmentShader = /* glsl */ `
 
     // --- Aerial perspective ----------------------------------------------
     // Same exponential-squared form and the same constant as the scene fog
-    // (FOG_DENSITY²), so the water recedes at exactly the rate the terrain and
-    // the forest do. A mismatched density between the water and everything
+    // (FOG_DENSITY squared), so the water recedes at exactly the rate the terrain
+    // and the forest do. A mismatched density between the water and everything
     // else is immediately visible as the lake not belonging to the scene.
     float dist = length(viewVec);
     float fogF = 1.0 - exp(-uFogDensity * uFogDensity * dist * dist);
     color = mix(color, uFogColor, clamp(fogF, 0.0, 1.0));
+
+    // --- Seen from BELOW --------------------------------------------------
+    //
+    // The camera spends the last 10% of the journey inside the lake, looking up
+    // at the underside of this surface — and until now it saw the back of an
+    // opaque plane, because the material is single-sided by default and the
+    // shader shades it identically either way.
+    //
+    // Total internal reflection is what a submerged viewer actually gets: past
+    // a critical angle the surface becomes a mirror of the lake floor, and
+    // within it the sky above is visible as a bright disc (Snell's window). Both
+    // are cheap here and together they are most of what makes an underwater
+    // shot read as underwater rather than as a blue room.
+    if (uUnderwater > 0.001) {
+      // Grazing angles from below reflect almost everything.
+      float below = max(-dot(normal, viewDir), 0.0);
+      float tir = smoothstep(0.35, 0.92, below);
+      // The floor colour, approximated from the deep water tone. Real
+      // total internal reflection shows the bed, which is silt-dark.
+      vec3 mirrored = mix(uDeepColor, uContaminant, contam * 0.8) * 0.85;
+      color = mix(color, mirrored, tir * uUnderwater * 0.9);
+
+      // Snell's window: the cone of sky visible from below, opening to a
+      // half-angle of about 48.6 degrees.
+      float window = smoothstep(0.62, 0.90, below);
+      color = mix(color, uSkyZenith * 1.25, window * uUnderwater * 0.75);
+    }
 
     gl_FragColor = vec4(color, 1.0);
     #include <colorspace_fragment>
@@ -376,13 +548,76 @@ const OUTFALL: [number, number] = [
 
 export function Lake({ quality }: { quality: QualitySettings }) {
   const surface = useRef<Mesh>(null);
-  const progress = useRef(0);
+
+  /**
+   * A radial grid for the surface, replacing `circleGeometry`.
+   *
+   * `CircleGeometry` is a centre vertex plus a rim: 160 triangles with no
+   * interior subdivision whatsoever. The vertex-shader swell could only tilt
+   * the whole disc between two points, and the second the camera crossed the
+   * surface there was no geometry at all for the waves to live in — the
+   * underwater shots were looking at a flat polygon.
+   *
+   * Rings are distributed with a square root so they bunch up near the middle,
+   * which is where the camera spends the entire final act. The result is a
+   * disc in the XZ plane, wound so that it faces +Y after the mesh's -90 degree
+   * X rotation, with the rim on the last ring.
+   */
+  const geometry = useMemo(() => {
+    const rings = 64;
+    const segments = 128;
+    const positions = new Float32Array((rings + 1) * (segments + 1) * 3);
+    const indices = new Uint32Array(rings * segments * 6);
+
+    let vertex = 0;
+    for (let ring = 0; ring <= rings; ring++) {
+      // sqrt spacing: near-uniform area coverage, so the tessellation is dense
+      // where the camera is rather than where the geometry is largest.
+      const t = ring / rings;
+      const radius = WORLD.lakeRadius * Math.sqrt(t);
+      for (let segment = 0; segment <= segments; segment++) {
+        const angle = (segment / segments) * Math.PI * 2;
+        positions[vertex * 3] = Math.cos(angle) * radius;
+        positions[vertex * 3 + 1] = 0;
+        positions[vertex * 3 + 2] = Math.sin(angle) * radius;
+        vertex++;
+      }
+    }
+
+    let index = 0;
+    for (let ring = 0; ring < rings; ring++) {
+      for (let segment = 0; segment < segments; segment++) {
+        const a = ring * (segments + 1) + segment;
+        const b = a + 1;
+        const c = a + segments + 1;
+        const d = c + 1;
+        // Wound so the visible face points along +Y.
+        indices[index++] = a;
+        indices[index++] = b;
+        indices[index++] = c;
+        indices[index++] = b;
+        indices[index++] = d;
+        indices[index++] = c;
+      }
+    }
+
+    const geo = new BufferGeometry();
+    geo.setAttribute("position", new BufferAttribute(positions, 3));
+    geo.setIndex(new BufferAttribute(indices, 1));
+    geo.computeVertexNormals();
+    geo.computeBoundingSphere();
+    return geo;
+  }, []);
 
   const uniforms = useMemo(
     () =>
       new Uniforms({
         uTime: { value: 0 },
-        uSwell: { value: 0.28 },
+        // The swell displacement in the vertex shader. Was 0.28m, which is
+        // under a third of a metre on a 190m lake — invisible even in the
+        // close shots. Now within the range a real lake of this size would
+        // show in wind.
+        uSwell: { value: 0.75 },
         uSource: { value: [OUTFALL[0], OUTFALL[1]] },
         uLakeCentre: { value: [WORLD.lakeCentre[0], WORLD.lakeCentre[2]] },
         uSunDirection: { value: new Vector3(SUN_DIRECTION.x, SUN_DIRECTION.y, SUN_DIRECTION.z).normalize() },
@@ -391,10 +626,12 @@ export function Lake({ quality }: { quality: QualitySettings }) {
         // void with a reflection on it rather than as water.
         uDeepColor: { value: new Color("#0e3d4a") },
         uShallowColor: { value: new Color("#2a9aa0") },
-        // Sky reflection colour. Matched to the fog so the water belongs to the
-        // same atmosphere as everything else rather than reading as a separate
-        // blue object pasted onto the scene.
-        uSkyColor: { value: new Color(FOG_COLOR) },
+        // The two ends of the sky gradient the water reflects. Sampled along
+        // the reflected ray rather than picked from a single fog colour, which
+        // is what gives the reflection somewhere to go as the waves move.
+        uSkyHorizon: { value: new Color("#b6b2a6") },
+        uSkyZenith: { value: new Color("#5b83a8") },
+        uSunColor: { value: new Color(1.0, 0.86, 0.66) },
         // Deliberately NOT neon green — the brief rules that out and it is the
         // most common tell of a fake pollution effect. A saturated ochre-
         // olive: brown enough to read as contaminated, warm enough to contrast
@@ -405,8 +642,10 @@ export function Lake({ quality }: { quality: QualitySettings }) {
         uFogDensity: { value: FOG_DENSITY },
         uContamination: { value: 0 },
         // 1 = clean water, 0 = fully contaminated. Falls with uContamination
-        // so the lake loses its mirror quality as the camera closes in.
+        // so the lake loses its mirror quality as the plume arrives.
         uClarity: { value: 1 },
+        // Driven from the camera's altitude in the frame loop below.
+        uUnderwater: { value: 0 },
         // Nearly the full lake radius. On a 95m lake a smaller plume read as
         // a small dirty patch rather than as a body of water being spoiled.
         uRadius: { value: WORLD.lakeRadius * 0.92 },
@@ -414,39 +653,41 @@ export function Lake({ quality }: { quality: QualitySettings }) {
     []
   );
 
-  useFrame(({ camera }, delta) => {
-    uniforms.set("uTime", (uniforms.get("uTime") as number) + delta);
+  useFrame(({ clock, camera }) => {
+    uniforms.set("uTime", clock.elapsedTime);
 
-    // Time accumulation: the discharge has been running the whole time, so the
-    // lake is worse later than earlier.
-    progress.current = Math.min(1, progress.current + delta * 0.012);
+    // How submerged the camera is, 0 at the surface and 1 by 4m down. Sampled
+    // over a short depth rather than switched at y=0 so the surface does not
+    // pop as the camera crosses it — the crossing is a deliberate beat of the
+    // final act and it needs to look like an event, not a discontinuity.
+    uniforms.set("uUnderwater", Math.min(1, Math.max(0, -camera.position.y) / 4));
 
-    // PROXIMITY. This is the part that makes the reveal read.
+    // ONE pollution driver, shared with the fish, the discharge and the
+    // sediment.
     //
-    // The previous version drove contamination purely from elapsed time, which
-    // meant the pollution was already fully spread before the camera ever
-    // arrived — so "watch the clear water get polluted as you approach" never
-    // happened. The viewer just got a finished, uniformly-dirty lake.
+    // This used to accumulate from mount time — `progress += delta * 0.012`,
+    // saturating after 83 seconds — combined with a camera-proximity term. That
+    // was wrong in three separate ways, and all three were visible:
     //
-    // Driving it from the camera's distance to the outfall instead means the
-    // contamination literally resolves out of the water as you descend: at
-    // 300m the lake reads clean and blue, by 60m the plume is unmissable.
-    // The two factors are combined with max(), so flying right up to the
-    // outfall reveals it regardless of how long the page has been open.
-    const dx = camera.position.x - OUTFALL[0];
-    const dz = camera.position.z - OUTFALL[1];
-    const distance = Math.hypot(dx, dz);
-    // GLSL-style smoothstep, inlined. Imported from scene/noise it would drag
-    // the terrain noise module into a component that only needs one curve.
-    const t = Math.min(1, Math.max(0, (distance - 70) / (300 - 70)));
-    const proximity = 1 - t * t * (3 - 2 * t);
-
-    const contamination = Math.max(progress.current, proximity);
+    //   1. It fought the brief. The water was supposed to be CLEAR at the
+    //      start, but this made it progressively filthier just for having the
+    //      tab open, so the lake was already half-spoiled in the opening
+    //      bird's-eye and fully brown before the camera ever arrived.
+    //   2. It disagreed with the fish. `pollutionAt()` in Life.tsx is a pure
+    //      function of scroll progress, so fish were swimming happily in water
+    //      that the surface shader was rendering as ochre.
+    //   3. It never recovered. Accumulated state cannot be un-accumulated, so
+    //      scrolling back up left the lake still foul and the fish dead.
+    //
+    // `pollutionAt` is a pure function of scroll, so all three resolve at once,
+    // and the four systems are guaranteed to agree because they are literally
+    // reading the same number.
+    const contamination = pollutionAt(scrollStore.smoothed);
     uniforms.set("uContamination", contamination);
     // Reflection strength drops as the water gets contaminated, so the lake
-    // visibly loses its mirror quality on approach. Dielectric properties
-    // really do change — and it is a strong secondary cue that something
-    // physical is in the water.
+    // visibly loses its mirror quality as the plume arrives. Dielectric
+    // properties really do change — and it is a strong secondary cue that
+    // something physical is in the water.
     uniforms.set("uClarity", 1 - contamination * 0.55);
   });
 
@@ -458,9 +699,17 @@ export function Lake({ quality }: { quality: QualitySettings }) {
         position={[WORLD.lakeCentre[0], 0, WORLD.lakeCentre[2]]}
         renderOrder={1}
       >
-        {/* Dense enough that the vertex-shader swell does not facet along the
-            shoreline, which is where the camera spends its time. */}
-        <circleGeometry args={[WORLD.lakeRadius, 160, 1]} />
+        {/*
+          The radial grid built above, not `circleGeometry`.
+
+          `CircleGeometry` is a centre vertex plus a rim — 160 triangles with no
+          interior subdivision at all. The vertex-shader swell could therefore
+          only tilt the disc between two points, and the moment the camera went
+          under the surface there was no geometry for the waves to live in. The
+          rings are sqrt-spaced so the subdivision is dense where the camera
+          actually is, at the middle of the lake.
+        */}
+        <primitive object={geometry} attach="geometry" />
         <shaderMaterial
           vertexShader={vertexShader}
           fragmentShader={fragmentShader}
