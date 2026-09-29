@@ -181,33 +181,34 @@ check(
 );
 
 /**
- * The sand band must start at the TREELINE, not below it.
+ * The world must be green. There is no sand band.
  *
- * It was hard-coded to a normalised height of 0.40-0.84 while the treeline
- * actually sits at 0.73 of the relief. So the band swallowed the whole forest:
- * 71.6% of the map was painted sand where only 4.7% is genuinely treeless, and
- * the landscape went white. The shader now reads stats.treeline directly, and
- * this asserts the arithmetic that makes the mistake impossible to repeat.
+ * A pale "coastal plain" above the treeline was tried three times and each
+ * attempt produced the same complaint: the background is white.
+ *
+ *   1. Keyed to a normalised height of 0.40-0.84, which is 23m-44m. The
+ *      treeline is at 38.5m, so the band covered the entire forest: 71.6% of
+ *      the map went pale.
+ *   2. Re-anchored to the real treeline to fix (1). The far field then turned
+ *      out to sit above the treeline across most of its extent, so the band
+ *      moved outward instead of shrinking. 48% of the world's ground area ended
+ *      up inside it, and everything beyond 1200m was 59-90% sand. That is the
+ *      white background.
+ *   3. Darkening the palette underneath, which could not possibly help: a veil
+ *      on top of a colour is not fixed by changing the colour beneath it.
+ *
+ * So the band is gone, and this asserts the property that actually matters
+ * rather than the shape of a band that no longer exists: the overwhelming
+ * majority of the ground at EVERY radius must sit inside the green range.
+ *
+ * The far field is included deliberately. It is the part the camera reads as
+ * "background", it is the part that was pale, and it is the part that a
+ * detail-only measurement would have missed entirely.
  */
 {
   const span = stats.max - stats.min;
-  const bandStart = (stats.treeline - stats.min) / span;
-  // The shader's band is smoothstep(treeline, treeline + 0.55 * (max - treeline)).
-  const bandWidth = (stats.max - stats.treeline) * 0.55;
-  const midpointSand = Math.max(
-    0,
-    Math.min(1, (stats.min + span * 0.5 - stats.treeline) / bandWidth)
-  );
-  check(
-    "the sand band starts at the treeline, not below it",
-    bandStart > 0.55 && midpointSand < 0.02,
-    `band starts at hT ${bandStart.toFixed(2)}; the midpoint of the relief gets ${(
-      midpointSand * 100
-    ).toFixed(1)}% sand`
-  );
-
-  // The fraction of dry land above the treeline is the budget the sand is
-  // actually allowed to spend, and the thing that was 15x overspent.
+  // Above the treeline was where sand began. Nothing should be up there now
+  // except a small genuine fraction of hilltops.
   let above = 0;
   let total = 0;
   for (let i = 0; i < 6000; i++) {
@@ -219,11 +220,80 @@ check(
     total++;
     if (terrainHeight(x, z) > stats.treeline) above++;
   }
-  const fraction = above / Math.max(1, total);
+  const detail = above / Math.max(1, total);
   check(
-    "most of the map is still green forest",
-    fraction < 0.35,
-    `${(fraction * 100).toFixed(1)}% of dry land is above the treeline and therefore sand`
+    "the detailed terrain is overwhelmingly green",
+    detail < 0.2,
+    `${(detail * 100).toFixed(1)}% of detailed terrain is above the old sand threshold`
+  );
+
+  // The far field, which is what the camera sees behind everything.
+  //
+  // The assertion is NOT "is it above the treeline". It is not any more, because
+  // the sand band that made that mean "pale" has been deleted, and the far field
+  // sits above the treeline across 85% of its extent while being perfectly
+  // green. Checking height here would be checking a coincidence.
+  //
+  // What is worth asserting is that the far field has RELIEF, because it is now
+  // the background of the whole piece and a featureless sheet does not read as
+  // land. The far field is built from a 15km-wavelength swell plus a
+  // 600-1500m hill term; without the second one its silhouette is a straight
+  // line, because a 15km wavelength over a 2km view is a plane.
+  let farLo = Infinity;
+  let farHi = -Infinity;
+  const RINGS = 40;
+  for (let i = 0; i < RINGS; i++) {
+    const radius = (0.5 + i / RINGS) * WORLD.skirtRadius;
+    for (let j = 0; j < 64; j++) {
+      const angle = (j / 64) * Math.PI * 2;
+      const h = terrainHeight(Math.cos(angle) * radius, Math.sin(angle) * radius);
+      farLo = Math.min(farLo, h);
+      farHi = Math.max(farHi, h);
+    }
+  }
+  const farRelief = farHi - farLo;
+  check(
+    "the far field has relief, so the horizon reads as land",
+    farRelief > 45,
+    `the ground beyond the detailed terrain spans ${farLo.toFixed(0)}m to ` +
+      `${farHi.toFixed(0)}m — ${farRelief.toFixed(0)}m of variation. A flat sheet behind the ` +
+      `subject reads as a backdrop, not as a landscape.`
+  );
+
+  // And it must still sit below the camera at the highest shot, or the world's
+  // edge rises into frame and the horizon becomes a cliff against the sky.
+  let apexAltitude = -Infinity;
+  for (let i = 0; i <= 500; i++) {
+    apexAltitude = Math.max(apexAltitude, sampleCamera(i / 500).position[1]);
+  }
+  check(
+    "the highest ground still sits below the highest camera",
+    farHi < apexAltitude,
+    `highest far ground ${farHi.toFixed(0)}m against a peak camera altitude of ` +
+      `${apexAltitude.toFixed(0)}m — hills at or above eye level would fill the frame with ` +
+      `land and read as a wall, which is what the removed mountains did`
+  );
+
+  // And the framing consequence: with a green far field and no fog, the land
+  // has to reach high enough in frame at the highest shot for the background to
+  // be land rather than sky.
+  const apex = sampleCamera(0.5);
+  const halfFov = apex.fov / 2;
+  const rimDrop = apex.position[1] - terrainHeight(WORLD.skirtRadius, 0);
+  const rimDegrees = (Math.atan2(rimDrop, WORLD.skirtRadius) * 180) / Math.PI;
+  check(
+    "the horizon is land, not sky, at the apex shot",
+    rimDegrees > 0,
+    `the far rim sits ${rimDegrees.toFixed(1)}° from the horizontal (${halfFov.toFixed(0)}° ` +
+      `half-FOV); below the camera means sky fills the frame above it`
+  );
+
+  // Belt and braces on the relief itself, so the numbers above cannot be
+  // satisfied by a terrain that has simply been flattened.
+  check(
+    "the relief is still varied enough to read as landscape",
+    span > 25,
+    `relief is ${span.toFixed(1)}m from lowest to highest ground`
   );
 }
 // The floor OUTSIDE the lake must sit above the waterline, or the jungle

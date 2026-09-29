@@ -167,6 +167,25 @@ export const WORLD = {
    */
   farFieldHeight: 130,
 
+  /**
+   * Amplitude of the rolling hills in the far field, in metres.
+   *
+   * Separate from farFieldHeight because the two do different jobs.
+   * farFieldHeight sets how high the ground sits overall; this sets how much
+   * shape is visible in it. The far field is the background of the whole piece
+   * now that the fog and the sand band are both gone, and without relief at
+   * this wavelength it reads as a flat green plane with a ruler-straight
+   * silhouette rather than as a landscape.
+   *
+   * 105m over a 900m wavelength is a slope of about 13 degrees, which is a
+   * proper hillside rather than a bump, and from the 250-400m camera altitudes
+   * used in the upper shots it produces a horizon line with visible peaks and
+   * saddles. It is not a mountain range, and deliberately stops well short of
+   * one: the mountains removed earlier subtended 22 degrees at the opening
+   * shot and read as a wall.
+   */
+  farHillsHeight: 105,
+
   // --- Vegetation -----------------------------------------------------------
   /** No trees inside the pad, plus a margin for the treeline. */
   jungleInnerRadius: 0,
@@ -396,6 +415,26 @@ export function terrainHeight(x: number, z: number): number {
   if (farField > 0.001) {
     const broad = fbm(x * 0.00042, z * 0.00042, 3) * 0.5 + 0.5;
     height += farField * (broad - 0.35) * WORLD.farFieldHeight;
+
+    // Rolling hills at a wavelength you can actually see.
+    //
+    // The broad term above has a wavelength near 15km. Across the 480m-2470m
+    // band the camera can see, that is a straight line with a constant slope —
+    // geometrically it is a plane tilted by a few degrees. It carries no
+    // readable form at all, so the far field renders as one flat sheet of
+    // colour with a silhouette as straight as a ruler.
+    //
+    // With the fog gone, and with the sand band gone, that sheet is now the
+    // background of the entire piece. It has to be land that looks like land,
+    // which means it needs relief at the scale a person would name hills at:
+    // 600m-1500m wavelength, tens of metres of amplitude.
+    //
+    // Two octaves so it is not obviously periodic. The amplitude ramps with
+    // farField, so it fades in over the detailed terrain and there is no seam
+    // at the boundary.
+    const hills = fbm(x * 0.0011, z * 0.0011, 3) * 0.5 + 0.5;
+    const swells = fbm(x * 0.00038 + 91.3, z * 0.00038 - 47.7, 2) * 0.5 + 0.5;
+    height += farField * (hills * 0.62 + swells * 0.38 - 0.5) * WORLD.farHillsHeight;
   }
 
   // --- Lake basin ---------------------------------------------------------

@@ -6,6 +6,7 @@ import { AdaptiveQuality, useQuality } from "./QualityGate";
 import { CameraRig } from "./CameraRig";
 import { SkyDome } from "./Sky";
 import { Lighting, FOG_COLOR } from "./Lighting";
+import { EXPOSURE } from "@/scene/tone";
 import { FogController } from "./FogController";
 import { Environment } from "./Environment";
 import { StatsReader } from "@/components/dev/statsBus";
@@ -87,8 +88,15 @@ export function Scene() {
           // ACES rather than the default. The default clips the sun and the
           // bright end of the sky to flat white, which is exactly where this
           // scene spends most of its dynamic range.
+          //
+          // ACES is not sufficient on its own. A Preetham sky with the sun at
+          // 11 degrees produces a radiance high enough to sit on the shoulder
+          // of this curve, and anything on the shoulder has already lost its
+          // hue. The exposure therefore has to come DOWN as well, and it lives
+          // in scene/tone.ts so check-sky.ts can read it and assert the sky is
+          // neither clipped nor desaturated.
           toneMapping: ACESFilmicToneMapping,
-          toneMappingExposure: 1.05,
+          toneMappingExposure: EXPOSURE,
         }}
         // Near plane at 1.0: depth precision is non-linear, so a closer near
         // plane wastes precision on a scene viewed from hundreds of metres.
