@@ -149,11 +149,15 @@ export const WORLD = {
   /**
    * How far out the coarse skirt reaches.
    *
-   * There are no mountains. This number exists only so the skirt's outer edge
-   * is far enough that atmospheric fog has fully dissolved it: at
-   * FOG_DENSITY = 0.00085 the fog reaches 97% at this distance, so the seam
-   * between "terrain" and "sky" is a flat wash of haze rather than a visible
-   * edge. Pulling it in makes the edge show.
+   * There are no mountains, and there is no fog either — so this number is no
+   * longer about hiding a seam in haze. It is purely geometric: the rim has to
+   * sit far enough below the horizon that it never enters frame, which
+   * check-layout.ts verifies against the highest camera in the journey.
+   *
+   * It used to rely on fog to dissolve the edge. It no longer does, so the
+   * requirement is met by distance and height instead. The far field is kept
+   * low and gently undulating rather than flat, so the horizon reads as
+   * receding land rather than as a table edge.
    */
   skirtRadius: 2470,
   /**

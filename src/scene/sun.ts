@@ -89,11 +89,14 @@ export const HEMISPHERE_INTENSITY = 1.05;
 export const SUN_DISTANCE = 420;
 
 /**
- * Approximate sky colour at the horizon, used as the fog tint.
+ * Approximate sky colour at the horizon.
  *
- * This is a fallback and a tuning handle. The real fog colour is computed per
- * frame in <Atmosphere/> from the sky shader; this is the value used before
- * the sky has rendered its first frame, and for fog that sits below the sky
- * dome where the analytic model is less trustworthy.
+ * Only used as the scene background, behind the sky dome. There is no longer a
+ * fog colour to tint, since distance fog has been removed — see FOG_DENSITY in
+ * Lighting.tsx.
+ *
+ * Darker and cooler than the value this started at, because with the fog gone
+ * this is what shows at the very edge of frame and the old tone was close
+ * enough to white to read as a blown highlight.
  */
-export const HORIZON_TINT = { r: 0.62, g: 0.66, b: 0.71 } as const;
+export const HORIZON_TINT = { r: 0.44, g: 0.49, b: 0.53 } as const;

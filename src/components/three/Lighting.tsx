@@ -32,29 +32,42 @@ import type { QualitySettings } from "@/scene/quality";
 const sunDirection = new Vector3(SUN_DIRECTION.x, SUN_DIRECTION.y, SUN_DIRECTION.z).normalize();
 
 /**
- * Fog density, in the exponential-squared sense: fog = 1 - e^(-(d·k)²).
+ * Distance fog density, in the exponential-squared sense: fog = 1 - e^(-(d·k)²).
  *
- * Calibrated against the scene's real depth range rather than guessed. The
- * world is now 600m of terrain with mountains at 1900m, so the density is
- * roughly double the old value — keeping the previous constant would have left
- * the entire new, tighter world almost unfogged and the mountains reading as a
- * hard cutout.
+ * ## ZERO. There is no distance fog, by explicit request.
  *
- * At k = 0.00085:
- *   200m — 0.03, effectively clear. The factory site 200m away is crisp.
- *   600m — 0.23.  The far treeline has lost a quarter of its contrast.
- *   1200m — 0.73. The near range is mostly atmosphere.
- *   1900m — 0.93. The far range is a value shift against the sky.
+ * This was 0.00085 against a light grey (#9ea7ad), and it was the single
+ * biggest reason the landscape read as white rather than green. From the
+ * opening bird's-eye — 859m out and 318m up — the visible ground runs from 600m
+ * to 1400m away, which is 23% to 65% fog. The skirt beyond it was 99% fog, so
+ * the whole horizon was a flat wash of light grey, and even the forest in the
+ * middle distance was a third diluted toward it. Nothing painted underneath
+ * could compete with a veil laid over the top.
  *
- * That progression is the aerial perspective in the reference frames. The
- * terrain and mountain shaders import this same constant, so all layers recede
- * at an identical rate — mismatched densities between layers is what makes a
- * composite scene look like separate scenes stacked together.
+ * The constant is kept rather than deleted because the underwater pass still
+ * needs one: a submerged camera with no murk reads as a blue room rather than
+ * as being in water. <FogController> ramps from this to the underwater density
+ * purely on camera altitude, so above the surface there is no distance fog at
+ * all.
+ *
+ * ## What this costs
+ *
+ * The far terrain will not recede, and a plain running to the fog limit will be
+ * as legible as the ground underfoot. That is a genuine loss and it is the trade
+ * being made. The compensation is shape: the far field stays low and gently
+ * undulating rather than flat, so distance reads through form instead of haze.
  */
-export const FOG_DENSITY = 0.00085;
+export const FOG_DENSITY = 0;
 
-/** Fog colour, shared by the scene's <fogExp2> and the custom shaders. */
-export const FOG_COLOR = "#9ea7ad";
+/**
+ * The colour used as the scene background and as the water's aerial tint.
+ *
+ * Much darker and cooler than the previous #9ea7ad. With no distance fog this
+ * is rarely seen over the terrain, but it still shows at the very edge of frame
+ * and behind the water, and the old value was close enough to white to read as
+ * a blown highlight.
+ */
+export const FOG_COLOR = "#6f7d86";
 
 /**
  * Keeps the shadow camera tight around the play area and snapped to the sun.

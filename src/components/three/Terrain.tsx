@@ -405,9 +405,9 @@ export function Terrain({ quality }: { quality: QualitySettings }) {
        * neither near-black nor pastel, and the saturation is what carries it
        * more than the level.
        */
-      uLowColor: { value: new Color("#2f5c1c") }, // wet jungle soil, in leaf shade
-      uMidColor: { value: new Color("#4e9024") }, // canopy, the dominant green
-      uHighColor: { value: new Color("#7d9a3c") }, // sunlit scrub, upper slopes
+      uLowColor: { value: new Color("#24500f") }, // leaf litter, in shade
+      uMidColor: { value: new Color("#3f8f14") }, // canopy, the dominant green
+      uHighColor: { value: new Color("#6da81f") }, // sunlit scrub, upper slopes
       uRockColor: { value: new Color("#8a8880") }, // bare rock on steep faces
       uSiltColor: { value: new Color("#5a5340") }, // lake bed silt
       uPadColor: { value: new Color("#75705f") }, // compacted industrial ground

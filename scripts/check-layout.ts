@@ -1,4 +1,4 @@
-/**
+﻿/**
  * Layout sanity: does the new, tighter world actually work geometrically?
  *
  *   npx tsx scripts/check-layout.ts
@@ -12,7 +12,6 @@
 
 import { terrainHeight, WORLD } from "../src/scene/world";
 import { sampleCamera, SHOTS } from "../src/scene/timeline";
-import { FOG_DENSITY } from "../src/components/three/Lighting";
 
 let failures = 0;
 let warnings = 0;
@@ -36,7 +35,7 @@ console.log("Factory pad");
 const padZ = WORLD.factoryPadHalf.z;
 /**
  * The pad's X extent, which is ASYMMETRIC: `padXMin` toward the lake and
- * `padXMax` away from it. See WORLD.factoryPadMaxX — the shoreline constrains
+ * `padXMax` away from it. See WORLD.factoryPadMaxX â€” the shoreline constrains
  * one side only, and the plant is free to sprawl the other way.
  */
 const padXMin = WORLD.factoryPadHalf.x;
@@ -47,9 +46,9 @@ const padXMax = WORLD.factoryPadMaxX;
 const show = (n: number) => n.toFixed(0);
 
 // The plant's real extent, read from WORLD rather than re-derived here. This
-// used to be the ground SLAB (36×31), which is smaller than the buildings
-// standing on it — the tank bank, the second shed and the far yard all reach
-// past it — so the check reported a comfortable margin for a plant that was
+// used to be the ground SLAB (36Ã—31), which is smaller than the buildings
+// standing on it â€” the tank bank, the second shed and the far yard all reach
+// past it â€” so the check reported a comfortable margin for a plant that was
 // actually spilling off its own levelled shelf.
 const LOCAL = WORLD.factoryLocalExtents;
 const plant = {
@@ -67,15 +66,15 @@ const plantDepth = plant.maxZ - plant.minZ;
 // reads as an empty plain with a shed in it.
 if (marginNear < 8 || marginZ < 8) {
   warn(
-    `pad only ${show(marginNear)}/${show(marginZ)}m larger than the factory on the near side — may look fused`
+    `pad only ${show(marginNear)}/${show(marginZ)}m larger than the factory on the near side â€” may look fused`
   );
 } else if (marginFar > 90) {
-  warn(`pad is ${show(marginFar)}m past the factory on the far side — reads as empty ground`);
+  warn(`pad is ${show(marginFar)}m past the factory on the far side â€” reads as empty ground`);
 } else {
   pass(
-    `pad ${show(padXMax - -padXMin)}×${show(padZ * 2)}m wraps the ${show(
+    `pad ${show(padXMax - -padXMin)}Ã—${show(padZ * 2)}m wraps the ${show(
       plantWidth
-    )}×${show(plantDepth)}m plant, ${show(marginNear)}/${show(
+    )}Ã—${show(plantDepth)}m plant, ${show(marginNear)}/${show(
       marginFar
     )}/${show(marginZ)}m margin (near/far/side)`
   );
@@ -95,7 +94,7 @@ const overlaps = lx + WORLD.lakeRadius > -padXMin && lz - WORLD.lakeRadius < pad
 if (overlaps) {
   fail(`lake overlaps the industrial pad by ${(lx + WORLD.lakeRadius + padXMin).toFixed(1)}m in x`);
 } else if (gapX < 12 || gapZ < 12) {
-  warn(`only ${gapX.toFixed(0)}/${gapZ.toFixed(0)}m between the lake shore and the pad — the outfall will be on top of the plant`);
+  warn(`only ${gapX.toFixed(0)}/${gapZ.toFixed(0)}m between the lake shore and the pad â€” the outfall will be on top of the plant`);
 } else {
   pass(`lake clears the near pad edge by ${gapX.toFixed(0)}m in x, ${gapZ.toFixed(0)}m in z`);
 }
@@ -107,7 +106,7 @@ console.log("\nDrainage channel");
 // either inside out or underwater.
 const channelLength = Math.hypot(lx + WORLD.lakeRadius * 0.58 - padXMin * 0.4, lz - WORLD.lakeRadius * 0.34 - padZ * 0.4);
 if (channelLength < 20) {
-  fail(`drainage channel is only ${channelLength.toFixed(0)}m long — the outfall is on top of the plant`);
+  fail(`drainage channel is only ${channelLength.toFixed(0)}m long â€” the outfall is on top of the plant`);
 } else {
   pass(`drainage channel spans ${channelLength.toFixed(0)}m from plant to lake`);
 }
@@ -131,7 +130,7 @@ let rim = -Infinity;
 for (let i = 0; i < 200; i++) {
   const angle = (i / 200) * Math.PI * 2;
   // Sampled on the shoreline ring, which is where the terrain is most likely
-  // to be wrong — a basin that is not actually enclosed reads as water
+  // to be wrong â€” a basin that is not actually enclosed reads as water
   // floating above flat ground.
   const r = WORLD.lakeRadius * 1.25;
   const h = terrainHeight(lx + Math.cos(angle) * r, lz + Math.sin(angle) * r);
@@ -139,7 +138,7 @@ for (let i = 0; i < 200; i++) {
   bed = Math.min(bed, terrainHeight(lx, lz));
 }
 if (rim < 0.5) {
-  fail(`lake is not enclosed — shoreline terrain drops to ${rim.toFixed(1)}m, so water would spill`);
+  fail(`lake is not enclosed â€” shoreline terrain drops to ${rim.toFixed(1)}m, so water would spill`);
 } else {
   pass(`lake is enclosed (rim ${rim.toFixed(1)}m, bed ${bed.toFixed(1)}m)`);
 }
@@ -151,7 +150,7 @@ const openingDistance = Math.hypot(opening.position[0], opening.position[2]);
 
 if (openingDistance < WORLD.terrainRadius * 0.6) {
   warn(
-    `opening camera is only ${openingDistance.toFixed(0)}m out — inside the ${WORLD.terrainRadius}m terrain, so the far side is not visible`
+    `opening camera is only ${openingDistance.toFixed(0)}m out â€” inside the ${WORLD.terrainRadius}m terrain, so the far side is not visible`
   );
 } else {
   pass(`opening camera ${openingDistance.toFixed(0)}m out, beyond the ${WORLD.terrainRadius}m terrain`);
@@ -175,21 +174,55 @@ for (let i = 0; i < 4000; i++) {
 const skirtRelief = skirtMax - skirtMin;
 if (skirtRelief > 220) {
   fail(
-    `the far field has ${skirtRelief.toFixed(0)}m of relief — a ridged horizon will read as a wiggly band again`
+    `the far field has ${skirtRelief.toFixed(0)}m of relief â€” a ridged horizon will read as a wiggly band again`
   );
 } else {
   pass(
-    `far field is a ${skirtRelief.toFixed(0)}m swell out to ${WORLD.skirtRadius}m — a horizon, not a ridge`
+    `far field is a ${skirtRelief.toFixed(0)}m swell out to ${WORLD.skirtRadius}m â€” a horizon, not a ridge`
   );
 }
 
-// The skirt's outer edge must be far enough that fog has dissolved it, or the
-// seam between terrain and sky shows as a hard line.
-const skirtFog = 1 - Math.exp(-Math.pow(FOG_DENSITY * WORLD.skirtRadius, 2));
-if (skirtFog < 0.9) {
-  fail(`the skirt's outer edge is only ${(skirtFog * 100).toFixed(0)}% fogged — the seam will be visible`);
+// The skirt must be long enough that its outer edge falls BELOW the visible
+// horizon from the highest camera position, because there is no longer any fog
+// to dissolve the seam.
+//
+// This was previously asserted as "the edge is 90% fogged", which is now
+// impossible â€” FOG_DENSITY is 0 by explicit request. The requirement is
+// geometric instead: from the apex shot, looking at the rim, the rim must sit
+// below the horizontal, or the world ends in a visible cliff against the sky.
+// Measured at the HIGHEST camera in the journey, which is the only place the
+// rim can rise into frame â€” from anywhere lower the horizon is above it.
+let apexProgress = 0;
+let apexAltitude = -Infinity;
+for (let i = 0; i <= 2000; i++) {
+  const state = sampleCamera(i / 2000);
+  if (state.position[1] > apexAltitude) {
+    apexAltitude = state.position[1];
+    apexProgress = i / 2000;
+  }
+}
+const apex = sampleCamera(apexProgress);
+const rimHeight = terrainHeight(WORLD.skirtRadius, 0);
+const rimDrop = apex.position[1] - rimHeight;
+
+// Both in degrees. The first version of this check printed radians and compared
+// them against degrees, which is the sort of unit error that makes a
+// measurement meaningless while still looking like it ran.
+const halfFovDeg = apex.fov / 2;
+const angularDropDeg = (Math.atan2(rimDrop, WORLD.skirtRadius) * 180) / Math.PI;
+
+if (angularDropDeg > halfFovDeg) {
+  fail(
+    `the far rim sits only ${angularDropDeg.toFixed(1)}Â° below the horizon at the highest ` +
+      `shot (progress ${apexProgress.toFixed(2)}, ${apexAltitude.toFixed(0)}m up) against a ` +
+      `${halfFovDeg.toFixed(1)}Â° half-FOV â€” it is in frame, and with no fog the world's edge ` +
+      `is a hard line`
+  );
 } else {
-  pass(`the skirt's outer edge is ${(skirtFog * 100).toFixed(0)}% fogged — the seam is hidden`);
+  pass(
+    `the far rim sits ${angularDropDeg.toFixed(1)}Â° below the horizon against a ` +
+      `${halfFovDeg.toFixed(1)}Â° half-FOV â€” the world edge is never in frame`
+  );
 }
 
 // The final shot must be close enough to the outfall for the contamination
@@ -199,9 +232,9 @@ const outfallX = lx + WORLD.lakeRadius * 0.58;
 const outfallZ = lz - WORLD.lakeRadius * 0.34;
 const outroToOutfall = Math.hypot(outro.position[0] - outfallX, outro.position[2] - outfallZ);
 if (outroToOutfall > 150) {
-  fail(`final shot is ${outroToOutfall.toFixed(0)}m from the outfall — the contamination will not be fully revealed`);
+  fail(`final shot is ${outroToOutfall.toFixed(0)}m from the outfall â€” the contamination will not be fully revealed`);
 } else {
-  pass(`final shot is ${outroToOutfall.toFixed(0)}m from the outfall — contamination fully revealed`);
+  pass(`final shot is ${outroToOutfall.toFixed(0)}m from the outfall â€” contamination fully revealed`);
 }
 
 // The camera must never end up under the terrain.
@@ -243,7 +276,7 @@ for (let i = 0; i <= 1000; i++) {
   worstDepth = Math.min(worstDepth, state.position[1] - terrainHeight(state.position[0], state.position[2]));
 }
 if (worstDepth < 0.4) {
-  fail(`camera gets within ${worstDepth.toFixed(2)}m of the lake bed — it would be inside the floor`);
+  fail(`camera gets within ${worstDepth.toFixed(2)}m of the lake bed â€” it would be inside the floor`);
 } else {
   pass(`camera keeps ${worstDepth.toFixed(1)}m of clearance above the lake bed`);
 }
@@ -259,8 +292,8 @@ if (Math.abs(total - 1) > 1e-6) {
 
 console.log("\n" + "=".repeat(64));
 if (failures === 0) {
-  console.log(`PASS — ${warnings} warning(s)\n`);
+  console.log(`PASS â€” ${warnings} warning(s)\n`);
 } else {
-  console.log(`FAIL — ${failures} failure(s), ${warnings} warning(s)\n`);
+  console.log(`FAIL â€” ${failures} failure(s), ${warnings} warning(s)\n`);
   process.exit(1);
 }

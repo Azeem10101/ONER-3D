@@ -5,7 +5,6 @@ import { Factory } from "./Factory";
 import { Lake, Outfall, OUTFALL_POSITION, UnderwaterVolume, Discharge } from "./Lake";
 import { Plume } from "./Plume";
 import { Terrain } from "./Terrain";
-import { GroundHaze } from "./Atmosphere";
 import { Birds, Fish } from "./Life";
 import { WORLD, terrainHeight } from "@/scene/world";
 import type { QualitySettings } from "@/scene/quality";
@@ -21,6 +20,25 @@ import type { QualitySettings } from "@/scene/quality";
  * were reading as a wall the camera was standing next to rather than as a
  * horizon. Removing them puts the whole budget on the site itself, which is
  * what the piece is about.
+ *
+ * ## Why there is no haze layer
+ *
+ * There was a <GroundHaze> here: soft camera-following billboards on ADDITIVE
+ * blending, which is the standard trick for ground mist. It was authored at
+ * 190m sprites and 0.1 opacity, and at 300m a 190m sprite subtends 35 degrees
+ * against a 22-degree half-FOV — it covered four fifths of the screen. With 170
+ * of them at medium quality, every pixel was crossed by ~148 additive sprites
+ * summing to 7.4x pure white.
+ *
+ * That one number caused every remaining symptom at once: a white ground, water
+ * that could not be seen, birds and fish that could not be seen, and smoke that
+ * stayed pale however dark its colours were made — because its value was being
+ * lifted by 7x white every single frame. Reducing it to 0.058 brought the scene
+ * back, and then it was removed entirely, because an additive white veil is fog
+ * in every sense that matters to the image and the request was for none.
+ *
+ * The cost is a hard horizon, which is handled by keeping the far field low and
+ * undulating rather than flat, so distance reads through shape.
  *
  * ## Why the factory is offset onto the pad
  *
@@ -102,9 +120,6 @@ export function Environment({ quality }: { quality: QualitySettings }) {
           correctly from above and visible from below. */}
       <Fish />
       <UnderwaterVolume quality={quality} />
-
-      {/* Transparent, camera-following, drawn last. */}
-      <GroundHaze quality={quality} />
     </>
   );
 }

@@ -5,7 +5,7 @@ import { Canvas } from "@react-three/fiber";
 import { AdaptiveQuality, useQuality } from "./QualityGate";
 import { CameraRig } from "./CameraRig";
 import { SkyDome } from "./Sky";
-import { Lighting } from "./Lighting";
+import { Lighting, FOG_COLOR } from "./Lighting";
 import { FogController } from "./FogController";
 import { Environment } from "./Environment";
 import { StatsReader } from "@/components/dev/statsBus";
@@ -61,7 +61,9 @@ function SceneContents() {
 
 function Fallback() {
   // Matches the sky's horizon so there is no flash before the first real frame.
-  return <color attach="background" args={["#9ea7ad"]} />;
+  // Darker than the fog colour this used to mirror — distance fog is gone, and
+  // a light background here shows as a white frame edge on slow first paint.
+  return <color attach="background" args={[FOG_COLOR]} />;
 }
 
 /**
