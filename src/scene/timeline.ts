@@ -8,19 +8,26 @@
  * The whole journey is authored in "scroll progress" space (0 -> 1) rather
  * than pixels, so retiming a shot never means touching layout.
  *
- * ## World layout (Three.js right-handed, Y up, 1 unit ~= 1 metre)
+ * ## World layout
+ *
+ * Right-handed, Y up, 1 unit = 1 metre. Authoritative definitions live in
+ * world.ts; the re-exports below exist so the timeline reads as one place.
  *
  *        +Y
- *         |            smoke plume + gas cards
- *         |            ^^^^^
- *   30m --+--  [chimney top]
+ *         |   plume + gas cards, up to ~400m
+ *         |   ^^^^^
+ *  88m ---+-- [chimney top]  (34, 88, -30)
  *         |
- *          \  factory
- *           \___________
+ *          \ factory pad, levelled to 7.5m
+ *           \____________
  *
- *   jungle ring: radius 60 -> 260 (all directions)
- *   LAKE centre: (-52, 0, 30), radius 30
- *   factory footprint: roughly x[-22..22], z[-16..18]
+ *   terrain radius    1400m
+ *   mountain ring     3200m, peaks to 620m
+ *   lake centre       (-300, 0, 190), radius 190
+ *   factory pad       x[-190..190], z[-150..150]
+ *
+ * Camera altitudes run 26m (outro) to 720m (apex). Anything below ~25m puts
+ * the camera inside the canopy, which the validator rejects.
  *
  * ## The beats
  *
@@ -44,6 +51,8 @@
  * intentional: the lake is a fast dive, and lingering on three waste cards
  * would stall the ending.
  */
+
+import { WORLD as WORLD_LAYOUT } from "./world";
 
 export type Vec3 = readonly [number, number, number];
 
@@ -71,17 +80,29 @@ export function ease(name: EaseName, t: number) {
 // ---------------------------------------------------------------------------
 
 export const WORLD = {
-  /** Chimney base and top, on the factory roof. */
-  chimneyBase: [8, 14, -6] as Vec3,
-  chimneyTop: [8, 44, -6] as Vec3,
+  /** Chimney base and top. Re-exported from world.ts so the timeline and the
+ *  factory geometry cannot disagree. */
+  get chimneyBase() {
+    return WORLD_LAYOUT.chimneyBase;
+  },
+  get chimneyTop() {
+    return WORLD_LAYOUT.chimneyTop;
+  },
 
   /** Lake surface. */
-  lakeCentre: [-52, 0, 30] as Vec3,
-  lakeRadius: 30,
+  get lakeCentre() {
+    return WORLD_LAYOUT.lakeCentre;
+  },
+  get lakeRadius() {
+    return WORLD_LAYOUT.lakeRadius;
+  },
 
-  /** Jungle ring bounds. */
-  jungleInner: 60,
-  jungleOuter: 260,
+  get terrainRadius() {
+    return WORLD_LAYOUT.terrainRadius;
+  },
+  get mountainRadius() {
+    return WORLD_LAYOUT.mountainRadius;
+  },
 } as const;
 
 // ---------------------------------------------------------------------------
@@ -122,19 +143,37 @@ export type Shot = {
  */
 export const SHOTS: readonly Shot[] = [
   {
+    // MILESTONE 1 OPENING FRAME - retimed for the tighter world.
+    //
+    // Composition is constrained by geometry rather than taste alone:
+    //   altitude 318m, horizontal offset 906m  ->  19.3 degrees of downward
+    //   pitch, with a 24 degree half-FOV. The horizon therefore sits about
+    //   80% of the way up the frame: the mountains are in shot, and there is
+    //   still enough downward view to read the forest canopy.
+    //
+    // An earlier version was pitched 33 degrees down, which put the horizon
+    // entirely out of frame. check-scene.ts asserts the horizon falls inside
+    // the vertical FOV so that class of mistake cannot return.
+    //
+    // The tighter altitude matters: at 620m over a 1400m world the plant and
+    // lake were miniatures. At 318m over a 600m world the same site fills the
+    // frame the way the reference frames do.
     id: "overview",
-    label: "Bird's eye — the whole picture",
+    label: "Bird's eye - nature, industry, and the cost of both",
     from: 0.0,
     to: 0.08,
     position: [
-      [96, 74, 128],
-      [82, 66, 112],
+      [-432, 318, 742],
+      [-352, 248, 604],
     ],
     target: [
-      [-4, 6, 2],
-      [-4, 8, 2],
+      [-30, 48, 26],
+      [-18, 32, 14],
     ],
-    fov: [46, 45],
+    // 48 degrees vertical is roughly a 40mm equivalent - the lens a drone
+    // carries, and the widest that still allows a horizon and a large subject
+    // to coexist in one frame without edge distortion.
+    fov: [48, 46],
     ease: "inOutSine",
   },
   {
@@ -143,44 +182,46 @@ export const SHOTS: readonly Shot[] = [
     from: 0.08,
     to: 0.2,
     position: [
-      [82, 66, 112],
-      [30, 34, 62],
+      [-352, 248, 604],
+      [-136, 104, 232],
     ],
     target: [
-      [-4, 8, 2],
-      [4, 16, 0],
+      [-18, 32, 14],
+      [0, 18, 0],
     ],
-    fov: [45, 48],
+    fov: [46, 44],
     ease: "inOutCubic",
   },
   {
+    // Terminates on the stack the camera then follows. Framing is authored
+    // against the real chimney position, not a placeholder.
     id: "chimney",
     label: "Arriving at the smoke source",
     from: 0.2,
     to: 0.32,
     position: [
-      [30, 34, 62],
-      [14, 46, 16],
+      [-136, 104, 232],
+      [4, 62, 66],
     ],
     target: [
-      [4, 16, 0],
-      [8, 44, -6],
+      [0, 18, 0],
+      [24, 44, -18],
     ],
-    fov: [48, 40],
+    fov: [44, 40],
     ease: "inOutSine",
   },
   {
     id: "rise-co2",
-    label: "Following the plume — CO2",
+    label: "Following the plume - CO2",
     from: 0.32,
     to: 0.42,
     position: [
-      [14, 46, 16],
-      [10, 66, 14],
+      [4, 62, 66],
+      [18, 102, 54],
     ],
     target: [
-      [8, 44, -6],
-      [7, 64, -6],
+      [24, 44, -18],
+      [22, 100, -18],
     ],
     fov: [40, 42],
     ease: "inOutSine",
@@ -188,16 +229,16 @@ export const SHOTS: readonly Shot[] = [
   },
   {
     id: "rise-co",
-    label: "Following the plume — CO",
+    label: "Following the plume - CO",
     from: 0.42,
     to: 0.51,
     position: [
-      [10, 66, 14],
-      [6, 86, 12],
+      [18, 102, 54],
+      [12, 142, 46],
     ],
     target: [
-      [7, 64, -6],
-      [5, 84, -5],
+      [22, 100, -18],
+      [16, 140, -18],
     ],
     fov: [42, 43],
     ease: "inOutSine",
@@ -205,16 +246,16 @@ export const SHOTS: readonly Shot[] = [
   },
   {
     id: "rise-no2",
-    label: "Following the plume — NO2",
+    label: "Following the plume - NO2",
     from: 0.51,
     to: 0.6,
     position: [
-      [6, 86, 12],
-      [2, 106, 10],
+      [12, 142, 46],
+      [4, 182, 38],
     ],
     target: [
-      [5, 84, -5],
-      [1, 104, -4],
+      [16, 140, -18],
+      [8, 180, -18],
     ],
     fov: [43, 43],
     ease: "inOutSine",
@@ -222,16 +263,16 @@ export const SHOTS: readonly Shot[] = [
   },
   {
     id: "rise-so2",
-    label: "Following the plume — SO2",
+    label: "Following the plume - SO2",
     from: 0.6,
     to: 0.69,
     position: [
-      [2, 106, 10],
-      [-4, 124, 8],
+      [4, 182, 38],
+      [-4, 220, 32],
     ],
     target: [
-      [1, 104, -4],
-      [-3, 122, -3],
+      [8, 180, -18],
+      [0, 218, -18],
     ],
     fov: [43, 44],
     ease: "inOutSine",
@@ -239,16 +280,16 @@ export const SHOTS: readonly Shot[] = [
   },
   {
     id: "rise-pm25",
-    label: "Following the plume — PM2.5",
+    label: "Following the plume - PM2.5",
     from: 0.69,
     to: 0.78,
     position: [
-      [-4, 124, 8],
-      [-8, 138, 6],
+      [-4, 220, 32],
+      [-10, 252, 28],
     ],
     target: [
-      [-3, 122, -3],
-      [-6, 136, -2],
+      [0, 218, -18],
+      [-4, 250, -18],
     ],
     fov: [44, 46],
     ease: "inOutSine",
@@ -260,12 +301,12 @@ export const SHOTS: readonly Shot[] = [
     from: 0.78,
     to: 0.82,
     position: [
-      [-8, 138, 6],
-      [-30, 168, 70],
+      [-10, 252, 28],
+      [-96, 402, 268],
     ],
     target: [
-      [-6, 136, -2],
-      [-20, 40, 20],
+      [-4, 250, -18],
+      [-40, 60, 40],
     ],
     fov: [46, 45],
     ease: "inOutCubic",
@@ -276,99 +317,145 @@ export const SHOTS: readonly Shot[] = [
     from: 0.82,
     to: 0.86,
     position: [
-      [-30, 168, 70],
-      [-64, 120, 118],
+      [-96, 402, 268],
+      [-288, 352, 486],
     ],
     target: [
-      [-20, 40, 20],
-      [-26, 4, 24],
+      [-40, 60, 40],
+      [-120, 44, 90],
     ],
-    fov: [45, 44],
+    fov: [45, 47],
     ease: "inOutSine",
   },
   {
+    // Brings the camera over the lake. The water is still clean here and the
+    // fish are alive and moving — this shot is the "before" of the story, so
+    // it is composed to show clear water with life in it.
     id: "water-approach",
     label: "Swinging out over the lake",
     from: 0.86,
     to: 0.9,
     position: [
-      [-64, 120, 118],
-      [-52, 34, 74],
+      [-288, 352, 486],
+      [-246, 96, 276],
     ],
     target: [
-      [-26, 4, 24],
-      [-52, 0, 30],
+      [-120, 44, 90],
+      [-185, 0, 130],
     ],
-    fov: [44, 40],
+    fov: [47, 44],
     ease: "inOutCubic",
   },
   {
-    id: "water-nutrients",
-    label: "The lake — nutrient loading",
+    // THE SURFACE CROSSING.
+    //
+    // The camera passes through the waterline and ends up inside the lake.
+    // This is the beat the whole second half builds to, and it is why the lake
+    // is only 95m across: at this scale the camera can be inside it, beside the
+    // fish, rather than hovering above a pond.
+    //
+    // The target stays above the water surface so the camera is looking
+    // slightly up, which puts the underside of the surface and the sky beyond
+    // it in frame — the shot that makes being underwater legible.
+    id: "water-enter",
+    label: "Entering the water — it is still clean",
     from: 0.9,
     to: 0.925,
     position: [
-      [-52, 34, 74],
-      [-46, 12, 52],
+      [-246, 96, 276],
+      // -2.2m, not -3.2m. The bowl's bed rises toward the shore, and at this
+      // distance the floor is at -3.6m — so -3.2m left only 0.38m of clearance
+      // and the near clip plane was essentially scraping the lake floor.
+      [-186, -2.2, 176],
     ],
     target: [
-      [-52, 0, 30],
-      [-52, 0, 30],
+      [-185, 0, 130],
+      [-198, 4.5, 142],
     ],
-    fov: [40, 34],
+    fov: [44, 40],
+    ease: "inOutSine",
+    // No card: this is a beat for looking, not for reading.
+  },
+  {
+    // The discharge starts. Effluent pours from the outfall, the water starts
+    // to discolour, and the fish nearest the outfall begin to react.
+    id: "water-discharge",
+    label: "The discharge reaches the water",
+    from: 0.925,
+    to: 0.95,
+    position: [
+      [-186, -2.2, 176],
+      [-172, -3.0, 158],
+    ],
+    target: [
+      [-198, 4.5, 142],
+      [-178, -1.5, 136],
+    ],
+    fov: [40, 38],
     ease: "inOutSine",
     card: "nutrients",
   },
   {
-    id: "water-metals",
-    label: "The lake — heavy metals",
-    from: 0.925,
-    to: 0.95,
+    // The plume spreads through the lake. The fish flee toward the clean water
+    // on the far side, and this shot is framed to show both the polluted
+    // near side and the clean far side at once — that contrast is the point.
+    id: "water-spread",
+    label: "It spreads — the fish flee toward clean water",
+    from: 0.95,
+    to: 0.975,
     position: [
-      [-46, 12, 52],
-      [-42, 7, 42],
+      [-172, -3.6, 158],
+      [-152, -4.2, 142],
     ],
     target: [
-      [-52, 0, 30],
-      [-52, 0, 30],
+      [-178, -1.5, 136],
+      [-206, -2.0, 118],
     ],
-    fov: [34, 30],
+    fov: [38, 36],
     ease: "inOutSine",
     card: "metals",
   },
   {
-    id: "water-thermal",
-    label: "The lake — thermal discharge",
-    from: 0.95,
-    to: 0.975,
+    // The fish that could not escape are dying and sinking. Held low and close
+    // so the change in the water is the subject, with the dead fish in the
+    // lower third of frame.
+    id: "water-death",
+    label: "There is nowhere clean left to go",
+    from: 0.975,
+    to: 0.992,
     position: [
-      [-42, 7, 42],
-      [-38, 5, 36],
+      [-152, -4.2, 142],
+      [-168, -5.0, 158],
     ],
     target: [
-      [-52, 0, 30],
-      [-52, 0, 30],
+      [-206, -2.0, 118],
+      [-190, -4.5, 140],
     ],
-    fov: [30, 28],
+    fov: [36, 34],
     ease: "inOutSine",
     card: "thermal",
   },
   {
-    // No card. This beat exists purely to give the closing message somewhere
-    // to land, and to bring the camera to rest on the lake.
+    // Rest, low in the polluted water, looking back up toward the surface.
+    // The epilogue lands here.
+    //
+    // Depth is held at -3.4m rather than going deeper. The bowl's bed varies
+    // with distance from the centre, and -5.6m put the camera inside the lake
+    // floor at the far side. -3.4m is below the fish, which is the framing
+    // that matters, and clear of the bed everywhere in the frame.
     id: "outro",
     label: "Orion Manufacturing Plant",
-    from: 0.975,
+    from: 0.992,
     to: 1.0,
     position: [
-      [-38, 5, 36],
-      [-30, 9, 30],
+      [-168, -3.4, 158],
+      [-172, -3.9, 164],
     ],
     target: [
-      [-52, 0, 30],
-      [-50, 1, 30],
+      [-190, -4.0, 140],
+      [-192, -2.6, 146],
     ],
-    fov: [28, 30],
+    fov: [34, 36],
     ease: "inOutSine",
   },
 ] as const;

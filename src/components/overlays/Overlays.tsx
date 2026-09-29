@@ -5,7 +5,6 @@ import { CardPanel } from "./CardPanel";
 import { EPILOGUE } from "@/scene/content";
 import { SHOTS, cardVisibility, shotAt, type CardId } from "@/scene/timeline";
 import { scrollStore } from "@/lib/scrollStore";
-import { validateTimeline } from "@/scene/validate";
 
 /**
  * Total scrollable height of the journey, in vh.
@@ -49,15 +48,6 @@ export function Overlays() {
   useEffect(() => {
     let frame = 0;
     let progress = 0;
-
-    if (process.env.NODE_ENV !== "production") {
-      const { problems } = validateTimeline();
-      if (problems.length) {
-        console.group(`Timeline: ${problems.length} problem(s)`);
-        for (const problem of problems) console.warn(problem);
-        console.groupEnd();
-      }
-    }
 
     const reduceMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
 
