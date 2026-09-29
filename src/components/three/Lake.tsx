@@ -2,7 +2,7 @@
 
 import { useMemo, useRef } from "react";
 import { useFrame } from "@react-three/fiber";
-import { BufferAttribute, BufferGeometry, Color, Vector3, BackSide, type Mesh, type Points } from "three";
+import { BufferAttribute, BufferGeometry, Color, Vector2, Vector3, BackSide, type Mesh, type Points } from "three";
 import { WORLD } from "@/scene/world";
 import { SUN_DIRECTION } from "@/scene/sun";
 import { FOG_COLOR, FOG_DENSITY } from "./Lighting";
@@ -625,14 +625,36 @@ export function Lake({ quality }: { quality: QualitySettings }) {
         // close shots. Now within the range a real lake of this size would
         // show in wind.
         uSwell: { value: 0.75 },
-        uSource: { value: [OUTFALL[0], OUTFALL[1]] },
-        uLakeCentre: { value: [WORLD.lakeCentre[0], WORLD.lakeCentre[2]] },
+        // Vector2, NOT a bare array.
+        //
+        // three.js uploads a `vec2` through `setValueV2f`, which reads
+        // `v.x`/`v.y`. A plain array has no `.x`, so the branch is skipped and
+        // the uniform is NEVER UPLOADED — it silently stays at (0, 0) and there
+        // is no warning anywhere.
+        //
+        // The consequences were not subtle and matched the reported symptom of
+        // "no water in the lake". With the centre at the world origin rather
+        // than 226m away:
+        //
+        //   - `smoothstep(uRadius * 1.05, uRadius * 0.6, dist)` got edge0 > edge1,
+        //     which is UNDEFINED BEHAVIOUR in GLSL, so the depth gradient was
+        //     garbage and the whole body colour was arbitrary.
+        //   - `fromSource` measured distance to (0,0), which is ~226m — far
+        //     outside the plume radius — so the contamination front was always
+        //     fully outside, the foam ring never appeared, and the surface
+        //     could never be polluted at all.
+        uSource: { value: new Vector2(OUTFALL[0], OUTFALL[1]) },
+        uLakeCentre: { value: new Vector2(WORLD.lakeCentre[0], WORLD.lakeCentre[2]) },
         uSunDirection: { value: new Vector3(SUN_DIRECTION.x, SUN_DIRECTION.y, SUN_DIRECTION.z).normalize() },
-        // Vibrant tropical water. The previous values (#0b1a1c / #1d3030) were
-        // so dark that the body colour was nearly black and the lake read as a
-        // void with a reflection on it rather than as water.
-        uDeepColor: { value: new Color("#0e3d4a") },
-        uShallowColor: { value: new Color("#2a9aa0") },
+        // Vibrant tropical water, lifted well clear of the previous pair.
+        //
+        // #0e3d4a / #2a9aa0 sat around 12% and 35% luminance, and once the
+        // reflection is composited on top the surface reads as a dark disc with
+        // a sheen rather than as water. These are bright enough to hold their
+        // own against the sky and to show the crest and trough shading, which
+        // is what actually communicates "surface" rather than "painted plane".
+        uDeepColor: { value: new Color("#1d6b7d") },
+        uShallowColor: { value: new Color("#4fc0c2") },
         // The two ends of the sky gradient the water reflects. Sampled along
         // the reflected ray rather than picked from a single fog colour, which
         // is what gives the reflection somewhere to go as the waves move.
@@ -702,6 +724,7 @@ export function Lake({ quality }: { quality: QualitySettings }) {
     <group>
       <mesh
         ref={surface}
+        geometry={geometry}
         rotation={[-Math.PI / 2, 0, 0]}
         position={[WORLD.lakeCentre[0], 0, WORLD.lakeCentre[2]]}
         renderOrder={1}
@@ -712,11 +735,14 @@ export function Lake({ quality }: { quality: QualitySettings }) {
           `CircleGeometry` is a centre vertex plus a rim — 160 triangles with no
           interior subdivision at all. The vertex-shader swell could therefore
           only tilt the disc between two points, and the moment the camera went
-          under the surface there was no geometry for the waves to live in. The
-          rings are sqrt-spaced so the subdivision is dense where the camera
-          actually is, at the middle of the lake.
+          under the surface there was no geometry for the waves to live in.
+
+          Attached as a `geometry` PROP rather than as
+          `<primitive object={...} attach="geometry" />`. Both work in principle,
+          but the prop is resolved by the reconciler as part of the mesh's own
+          construction, so there is no window in which the mesh exists with a
+          null geometry and silently draws nothing.
         */}
-        <primitive object={geometry} attach="geometry" />
         <shaderMaterial
           vertexShader={vertexShader}
           fragmentShader={fragmentShader}

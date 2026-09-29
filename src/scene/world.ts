@@ -50,20 +50,37 @@ export const WORLD = {
   /** Centre of the industrial complex. */
   factoryCentre: [0, 0, 0] as Vec3,
   /**
-   * Half-extents of the levelled industrial pad, in metres.
+   * Half-extents of the levelled industrial pad, in metres. Symmetric in Z.
    *
-   * Grown from 62×52 alongside the factory itself, twice now. The pad has to
-   * track the building: too small and the plant spills over the edge of its own
-   * levelled shelf, too large and the clearing reads as an empty plain with a
-   * shed on it. check-layout.ts asserts both directions, and reads the
-   * factory's real extent rather than a stale hard-coded number.
-   *
-   * The X extent is bounded by the lake, which is only 12m away at the closest
-   * approach — see check-layout's "lake clears the pad" assertion. Growing the
-   * plant further will require moving the lake or the channel approach, not
-   * widening the pad.
+   * The X extent is NOT symmetric — see `factoryPadMaxX`. This value is the
+   * extent toward the LAKE (-X), and it is bounded by it: the near shoreline is
+   * 90m from the origin, so this cannot grow without either moving the lake or
+   * burying the outfall approach.
    */
-  factoryPadHalf: { x: 76, z: 68 } as const,
+  factoryPadHalf: { x: 78, z: 100 } as const,
+
+  /**
+   * How far the pad extends AWAY from the lake, in metres.
+   *
+   * ## Why the pad is asymmetric
+   *
+   * Growing the plant and growing the pad are two separate constraints, and with
+   * a symmetric pad they fight to a standstill. The lake sits at x = -185 with a
+   * 95m radius, so its near shore is 90m from the origin. Every metre added to
+   * the pad in -X closes that gap: at 82m the gap is 8m, inside the threshold
+   * check-layout.ts warns at, and close enough that the drainage channel and the
+   * shoreline begin to interfere.
+   *
+   * Nothing constrains the plant in +X — there is jungle out to 600m. So the
+   * pad simply runs further on that side: 78m toward the water, 128m away from
+   * it. That buys a footprint nearly 50% larger in area for exactly zero
+   * encroachment on the lake, which is what finally lets the plant grow without
+   * the two constraints cancelling.
+   *
+   * It is also how real sites are laid out. A plant expands away from its
+   * environmental constraint, not into it.
+   */
+  factoryPadMaxX: 162,
   /**
    * Height of the pad relative to the surrounding jungle floor. Industrial
    * sites are cut flat and often raised, and a visible shelf edge reads as
@@ -152,6 +169,31 @@ export const WORLD = {
 
   // --- Factory size ---------------------------------------------------------
   /**
+   * The plant's real extent in its OWN local coordinates, before
+   * `factoryScale`, as [minX, maxX] and [minZ, maxZ].
+   *
+   * This exists because the layout checks were measuring the GROUND SLAB — which
+   * is 72×62m — and treating that as the building. It is not. The storage tank
+   * bank reaches local x = -40, the second shed reaches z = -39, and the new far
+   * yard runs out to x = 70 and z = 44. A plant scaled to 2.05 therefore reached
+   * x = -92 in world space, which is INSIDE the lake, and the check reported a
+   * comfortable 4m margin the whole time.
+   *
+   * It is declared here rather than measured from the JSX because the component
+   * is a declarative tree and walking it to find bounds would mean reflecting
+   * over React elements at build time. The trade-off is that it has to be kept in
+   * step with Factory.tsx, which is why the values are asymmetric and spelled out
+   * rather than being a single "size" number: a symmetric half-extent cannot
+   * express a plant that sprawls away from its water.
+   */
+  factoryLocalExtents: {
+    minX: -35,
+    maxX: 70,
+    minZ: -39,
+    maxZ: 44,
+  } as const,
+
+  /**
    * Uniform scale applied to the procedural plant.
    *
    * The factory is authored once in local coordinates and scaled here rather
@@ -160,17 +202,19 @@ export const WORLD = {
    * never drift apart. Resizing the plant is then a one-line change that the
    * layout checks can verify.
    *
-   * 1.85 puts the main hall at 81m long and the stack 56m above the roof, on a
-   * footprint of about 133×115m — 3.3x the area of the 72×62m plant it
-   * replaced. That is the scale at which a plant stops reading as a shed on a
-   * plain: against a 600m terrain radius and a 190m lake, it is now the largest
-   * single object in the frame, which is what the piece is about.
+   * 2.0 puts the main hall at 88m long and the stack 60m above the roof, on a
+   * footprint of about 140×127m — 4.1x the area of the original 72×62m plant,
+   * and the largest single object in the frame, which is what the piece is
+   * about.
    *
-   * The pad tracks it (see factoryPadHalf), and the chimney is anchored in world
-   * space rather than local, so growing the plant by a further 28% did not
-   * require retiming a single camera keyframe or moving the plume.
+   * The pad runs 78m toward the lake and 128m away from it, and THAT is what
+   * makes this scale possible: with a symmetric pad the two constraints cancel
+   * and the plant cannot pass about 1.95. See `factoryPadMaxX`.
+   *
+   * The chimney is anchored in world space rather than local, so growing the
+   * plant did not require retiming a camera keyframe or moving the plume.
    */
-  factoryScale: 1.85,
+  factoryScale: 2.0,
 } as const;
 
 /**
@@ -402,8 +446,17 @@ export function terrainHeight(x: number, z: number): number {
   // does not look like a hard-edged rectangle stamped into the ground. The
   // blend is ~40% of the pad so the shelf has a visible edge without eating
   // the surrounding forest.
+  //
+  // ASYMMETRIC in X: the pad reaches WORLD.factoryPadHalf.x toward the lake and
+  // WORLD.factoryPadMaxX away from it. See that field for why — the shoreline
+  // is the only thing constraining this, and it constrains one side only.
+  //
+  // The distance to the nearer edge is computed with a sign-dependent limit
+  // rather than `abs(x)`, which would mirror the short side back out to the long
+  // one and make the pad symmetric again by accident.
   const padBlend = 16;
-  const padX = 1 - smoothstep(WORLD.factoryPadHalf.x, WORLD.factoryPadHalf.x + padBlend, Math.abs(x));
+  const padLimitX = x < 0 ? WORLD.factoryPadHalf.x : WORLD.factoryPadMaxX;
+  const padX = 1 - smoothstep(padLimitX, padLimitX + padBlend, Math.abs(x));
   const padZ = 1 - smoothstep(WORLD.factoryPadHalf.z, WORLD.factoryPadHalf.z + padBlend, Math.abs(z));
   const pad = padX * padZ;
   if (pad > 0.001) {
@@ -462,7 +515,14 @@ export function terrainHeight(x: number, z: number): number {
 /** How strongly industrialised the ground is at a point, 0..1. Used to keep
  *  trees and scrub off the pad. */
 export function padInfluence(x: number, z: number): number {
-  const padX = 1 - smoothstep(WORLD.factoryPadHalf.x * 0.9, WORLD.factoryPadHalf.x * 1.25, Math.abs(x));
+  // Asymmetric in X, matching the carve in terrainHeight(). This has to agree
+  // with the terrain function exactly: if the carve reaches further than the
+  // vegetation exclusion, the plant sits on ground that still grows forest, and
+  // if it excludes further, a treeless strip of bare terrain appears beside the
+  // buildings with no visible cause.
+  const limitX = (x < 0 ? WORLD.factoryPadHalf.x : WORLD.factoryPadMaxX) * 0.9;
+  const reachX = (x < 0 ? WORLD.factoryPadHalf.x : WORLD.factoryPadMaxX) * 1.25;
+  const padX = 1 - smoothstep(limitX, reachX, Math.abs(x));
   const padZ = 1 - smoothstep(WORLD.factoryPadHalf.z * 0.9, WORLD.factoryPadHalf.z * 1.35, Math.abs(z));
   return padX * padZ;
 }

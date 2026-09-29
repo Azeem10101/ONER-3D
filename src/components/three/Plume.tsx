@@ -199,7 +199,15 @@ const fragmentShader = /* glsl */ `
 
     // Aerial perspective. High puffs are mostly the air between camera and
     // smoke, which is what welds the plume into the sky.
-    color = mix(color, uFogColor, smoothstep(0.15, 1.0, vHeight01) * 0.72);
+    //
+    // Held to 0.5 rather than 0.72, and biased toward the DARK end of the ramp
+    // rather than the light one. Mixing 72% of a pale fog colour into the top
+    // of the column washed it out to the same value as the sky behind it, which
+    // both flattens the plume and hides the drift. Now the top of the column
+    // is a slightly lighter version of its own colour, so it stays legible
+    // against the sky while still receding.
+    vec3 distant = mix(uSmokeDark, uFogColor, 0.55);
+    color = mix(color, distant, smoothstep(0.1, 1.0, vHeight01) * 0.5);
 
     // Opacity, and the budget that goes with it.
     //
@@ -381,8 +389,25 @@ function PlumeLayer({ layer, sunDirection }: { layer: LayerConfig; sunDirection:
         // adaptive scaler changes render scale.
         uPixelScale: { value: 900 },
         uSunDirectionView: { value: new Vector3().copy(sunDirection) },
-        uSmokeDark: { value: new Color("#2f2a24") },
-        uSmokeLit: { value: new Color("#ded5c4") },
+        /**
+         * Much darker than any previous revision, and deliberately so.
+         *
+         * #2f2a24 / #ded5c4 was far too light: the lit value was 87% luminance,
+         * so under a 3.4-intensity sun the column pushed past white and read as
+         * steam. #0f0d0b / #8c857a fixed that, but the plume still looked pale
+         * because a large ADDITIVE HAZE LAYER sat over the whole scene and
+         * lifted everything it touched, accumulating to 7.4x white at medium
+         * quality. With that layer corrected the smoke can be judged on its own
+         * terms, and it wants to be darker still.
+         *
+         * Real combustion smoke is a very dark grey-brown. The lit side of a
+         * dense column is closer to 42% luminance than to 90%, and the shaded
+         * side is nearly black. That contrast is what gives the column its mass:
+         * a plume with a light core and a dark edge reads as a glowing tube,
+         * and the reverse is what looks like volume.
+         */
+        uSmokeDark: { value: new Color("#080706") },
+        uSmokeLit: { value: new Color("#6b6459") },
         uFogColor: { value: new Color(FOG_COLOR) },
         uOpacity: { value: layer.opacity },
         uExposure: { value: 1.0 },

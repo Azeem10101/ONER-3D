@@ -179,6 +179,53 @@ check(
   stats.treeline > stats.min + (stats.max - stats.min) * 0.45,
   `treeline sits ${(((stats.treeline - stats.min) / (stats.max - stats.min)) * 100).toFixed(0)}% of the way up the relief`
 );
+
+/**
+ * The sand band must start at the TREELINE, not below it.
+ *
+ * It was hard-coded to a normalised height of 0.40-0.84 while the treeline
+ * actually sits at 0.73 of the relief. So the band swallowed the whole forest:
+ * 71.6% of the map was painted sand where only 4.7% is genuinely treeless, and
+ * the landscape went white. The shader now reads stats.treeline directly, and
+ * this asserts the arithmetic that makes the mistake impossible to repeat.
+ */
+{
+  const span = stats.max - stats.min;
+  const bandStart = (stats.treeline - stats.min) / span;
+  // The shader's band is smoothstep(treeline, treeline + 0.55 * (max - treeline)).
+  const bandWidth = (stats.max - stats.treeline) * 0.55;
+  const midpointSand = Math.max(
+    0,
+    Math.min(1, (stats.min + span * 0.5 - stats.treeline) / bandWidth)
+  );
+  check(
+    "the sand band starts at the treeline, not below it",
+    bandStart > 0.55 && midpointSand < 0.02,
+    `band starts at hT ${bandStart.toFixed(2)}; the midpoint of the relief gets ${(
+      midpointSand * 100
+    ).toFixed(1)}% sand`
+  );
+
+  // The fraction of dry land above the treeline is the budget the sand is
+  // actually allowed to spend, and the thing that was 15x overspent.
+  let above = 0;
+  let total = 0;
+  for (let i = 0; i < 6000; i++) {
+    const angle = i * 2.399963;
+    const radius = Math.sqrt((i + 0.5) / 6000) * WORLD.terrainRadius;
+    const x = Math.cos(angle) * radius;
+    const z = Math.sin(angle) * radius;
+    if (Math.hypot(x - WORLD.lakeCentre[0], z - WORLD.lakeCentre[2]) < WORLD.lakeRadius * 1.5) continue;
+    total++;
+    if (terrainHeight(x, z) > stats.treeline) above++;
+  }
+  const fraction = above / Math.max(1, total);
+  check(
+    "most of the map is still green forest",
+    fraction < 0.35,
+    `${(fraction * 100).toFixed(1)}% of dry land is above the treeline and therefore sand`
+  );
+}
 // The floor OUTSIDE the lake must sit above the waterline, or the jungle
 // scatter rejects it and the forest thins out into bare ground. This is the
 // bug that produced "two layers of trees with empty land between them", so it
@@ -217,12 +264,19 @@ check(
 // silently started measuring open terrain the moment the pad was resized — and
 // then reported a "pad is not level" failure that was really a stale test.
 let padDeviation = 0;
-const padStepX = (WORLD.factoryPadHalf.x * 2) / 8;
-const padStepZ = (WORLD.factoryPadHalf.z * 2) / 8;
 for (let i = 0; i <= 8; i++) {
   for (let j = 0; j <= 8; j++) {
-    const x = -WORLD.factoryPadHalf.x + i * padStepX;
-    const z = -WORLD.factoryPadHalf.z + j * padStepZ;
+    // Sample the ASYMMETRIC pad: the -X half is bounded by the lake shore, the
+    // +X half runs much further (see WORLD.factoryPadMaxX). A symmetric sample
+    // grid would put half its points on ground that is no longer part of the
+    // site, where the terrain is free to undulate — and then report a "pad is
+    // not level" failure that is really a stale test.
+    const t = i / 8;
+    const x =
+      t < 0.5
+        ? -WORLD.factoryPadHalf.x + t * 2 * WORLD.factoryPadHalf.x
+        : (t - 0.5) * 2 * WORLD.factoryPadMaxX;
+    const z = -WORLD.factoryPadHalf.z + (j / 8) * 2 * WORLD.factoryPadHalf.z;
     padDeviation = Math.max(padDeviation, Math.abs(terrainHeight(x, z) - WORLD.factoryPadHeight));
   }
 }

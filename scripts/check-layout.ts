@@ -33,51 +33,71 @@ console.log("\nONER-3D layout check\n" + "=".repeat(64) + "\n");
 
 // --- Pad vs factory -------------------------------------------------------
 console.log("Factory pad");
-const [padX, padZ] = [WORLD.factoryPadHalf.x, WORLD.factoryPadHalf.z];
-// The procedural factory's own footprint, read from its authored geometry and
-// scaled the same way <Factory> scales it. Previously hard-coded at {28, 22},
-// which was the pre-1.45x plant's extent; after the scale-up the building
-// silently grew past the pad it is supposed to sit on and this check would have
-// kept reporting the old margin.
-const FACTORY_EXTENT = { x: 36 * WORLD.factoryScale, z: 31 * WORLD.factoryScale };
+const padZ = WORLD.factoryPadHalf.z;
+/**
+ * The pad's X extent, which is ASYMMETRIC: `padXMin` toward the lake and
+ * `padXMax` away from it. See WORLD.factoryPadMaxX — the shoreline constrains
+ * one side only, and the plant is free to sprawl the other way.
+ */
+const padXMin = WORLD.factoryPadHalf.x;
+const padXMax = WORLD.factoryPadMaxX;
 // Rounded for display only. The pad check reports these raw, and
 // `104.39999999999999m` in a pass message reads like a bug even though it is
 // just float multiplication. Kept separate so the arithmetic above stays exact.
 const show = (n: number) => n.toFixed(0);
 
-if (FACTORY_EXTENT.x < padX && FACTORY_EXTENT.z < padZ) {
-  const marginX = padX - FACTORY_EXTENT.x;
-  const marginZ = padZ - FACTORY_EXTENT.z;
-  // Too tight and the pad looks like the building, too loose and the
-  // clearing reads as an empty plain with a shed in it.
-  if (marginX < 8 || marginZ < 8) {
-    warn(`pad only ${marginX.toFixed(0)}/${marginZ.toFixed(0)}m larger than the factory — may look fused`);
-  } else if (marginX > 60) {
-    warn(`pad is ${marginX.toFixed(0)}/${marginZ.toFixed(0)}m larger than the factory — reads as empty ground`);
-  } else {
-    pass(
-      `pad ${padX}×${padZ}m wraps the ${show(FACTORY_EXTENT.x * 2)}×${show(
-        FACTORY_EXTENT.z * 2
-      )}m factory with ${show(marginX)}/${show(marginZ)}m margin`
-    );
-  }
+// The plant's real extent, read from WORLD rather than re-derived here. This
+// used to be the ground SLAB (36×31), which is smaller than the buildings
+// standing on it — the tank bank, the second shed and the far yard all reach
+// past it — so the check reported a comfortable margin for a plant that was
+// actually spilling off its own levelled shelf.
+const LOCAL = WORLD.factoryLocalExtents;
+const plant = {
+  minX: LOCAL.minX * WORLD.factoryScale,
+  maxX: LOCAL.maxX * WORLD.factoryScale,
+  minZ: LOCAL.minZ * WORLD.factoryScale,
+  maxZ: LOCAL.maxZ * WORLD.factoryScale,
+};
+const marginNear = padXMin - -plant.minX;
+const marginFar = padXMax - plant.maxX;
+const marginZ = padZ - Math.max(-plant.minZ, plant.maxZ);
+const plantWidth = plant.maxX - plant.minX;
+const plantDepth = plant.maxZ - plant.minZ;
+// Too tight and the pad looks like the building, too loose and the clearing
+// reads as an empty plain with a shed in it.
+if (marginNear < 8 || marginZ < 8) {
+  warn(
+    `pad only ${show(marginNear)}/${show(marginZ)}m larger than the factory on the near side — may look fused`
+  );
+} else if (marginFar > 90) {
+  warn(`pad is ${show(marginFar)}m past the factory on the far side — reads as empty ground`);
 } else {
-  fail("the factory extends beyond its own pad");
+  pass(
+    `pad ${show(padXMax - -padXMin)}×${show(padZ * 2)}m wraps the ${show(
+      plantWidth
+    )}×${show(plantDepth)}m plant, ${show(marginNear)}/${show(
+      marginFar
+    )}/${show(marginZ)}m margin (near/far/side)`
+  );
 }
 
 // --- Lake vs pad ----------------------------------------------------------
+// Only the NEAR (-X) edge of the pad is compared against the lake. The far edge
+// runs 128m away from the water and is not what this test is about; comparing
+// the wrong edge is how a symmetric assumption survives into a layout that is no
+// longer symmetric.
 console.log("\nLake vs pad");
 const [lx, , lz] = WORLD.lakeCentre;
-const gapX = Math.abs(lx + WORLD.lakeRadius + padX);
+const gapX = Math.abs(lx + WORLD.lakeRadius + padXMin);
 const gapZ = Math.abs(lz - WORLD.lakeRadius - padZ);
-const overlaps = lx + WORLD.lakeRadius > -padX && lz - WORLD.lakeRadius < padZ;
+const overlaps = lx + WORLD.lakeRadius > -padXMin && lz - WORLD.lakeRadius < padZ;
 
 if (overlaps) {
-  fail(`lake overlaps the industrial pad by ${(lx + WORLD.lakeRadius + padX).toFixed(1)}m in x`);
+  fail(`lake overlaps the industrial pad by ${(lx + WORLD.lakeRadius + padXMin).toFixed(1)}m in x`);
 } else if (gapX < 12 || gapZ < 12) {
   warn(`only ${gapX.toFixed(0)}/${gapZ.toFixed(0)}m between the lake shore and the pad — the outfall will be on top of the plant`);
 } else {
-  pass(`lake clears the pad by ${gapX.toFixed(0)}m in x, ${gapZ.toFixed(0)}m in z`);
+  pass(`lake clears the near pad edge by ${gapX.toFixed(0)}m in x, ${gapZ.toFixed(0)}m in z`);
 }
 
 // --- Drainage channel -----------------------------------------------------
@@ -85,7 +105,7 @@ console.log("\nDrainage channel");
 // The channel runs from the pad edge to the outfall. Its length must be
 // positive and the terrain along it must be above water, or the channel is
 // either inside out or underwater.
-const channelLength = Math.hypot(lx + WORLD.lakeRadius * 0.58 - padX * 0.4, lz - WORLD.lakeRadius * 0.34 - padZ * 0.4);
+const channelLength = Math.hypot(lx + WORLD.lakeRadius * 0.58 - padXMin * 0.4, lz - WORLD.lakeRadius * 0.34 - padZ * 0.4);
 if (channelLength < 20) {
   fail(`drainage channel is only ${channelLength.toFixed(0)}m long — the outfall is on top of the plant`);
 } else {
@@ -94,7 +114,7 @@ if (channelLength < 20) {
 
 let lowestOnChannel = Infinity;
 for (let t = 0; t <= 1; t += 0.05) {
-  const x = padX * 0.4 + t * (lx + WORLD.lakeRadius * 0.58 - padX * 0.4);
+  const x = padXMin * 0.4 + t * (lx + WORLD.lakeRadius * 0.58 - padXMin * 0.4);
   const z = padZ * 0.4 + t * (lz - WORLD.lakeRadius * 0.34 - padZ * 0.4);
   lowestOnChannel = Math.min(lowestOnChannel, terrainHeight(x, z));
 }

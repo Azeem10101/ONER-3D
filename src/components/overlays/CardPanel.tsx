@@ -38,10 +38,12 @@ export function CardPanel({ id, ref }: CardPanelProps) {
             <div className="card-symbol text-5xl sm:text-6xl">{card.symbol}</div>
             <p className="mt-2 text-sm font-medium text-white/90">{card.name}</p>
           </div>
-          <span className="hud-label shrink-0 rounded-full border border-white/10 px-2.5 py-1 whitespace-nowrap">
+          <span className="hud-label shrink-0 rounded-sm border border-white/10 px-2.5 py-1 whitespace-nowrap">
             {card.onerMetric}
           </span>
         </div>
+
+        <div className="card-rule mt-5" />
 
         <p className="mt-5 text-lg leading-snug font-medium text-balance" style={{ color: card.accent }}>
           {card.tagline}
@@ -58,17 +60,37 @@ export function CardPanel({ id, ref }: CardPanelProps) {
           </div>
         </dl>
 
-        <dl className="mt-6 grid grid-cols-2 gap-px overflow-hidden rounded-lg bg-white/10">
+        {/*
+          The figures block.
+
+          Previously a 2px grid gap over a `bg-white/10` background, which puts
+          a visible light grid between every cell — the look of a marketing
+          comparison table rather than of a measurement readout. This uses hairline
+          dividers instead, and a single flat panel, so the numbers read as one
+          record.
+        */}
+        <dl className="mt-6 grid grid-cols-2 gap-x-5 gap-y-4 border-t border-white/10 pt-5">
           {card.stats.map((stat) => (
-            <div key={stat.label} className="bg-[#0b100f]/90 px-3.5 py-3">
-              <dt className="text-[0.6875rem] text-white/50">{stat.label}</dt>
-              <dd className="mt-1 font-mono text-base font-semibold" style={{ color: card.accent }}>
+            <div key={stat.label}>
+              <dt className="hud-label">{stat.label}</dt>
+              <dd className="mt-1.5 font-mono text-lg font-semibold leading-none" style={{ color: card.accent }}>
                 {stat.value}
               </dd>
-              {stat.note ? <p className="mt-0.5 text-[0.6875rem] text-white/45">{stat.note}</p> : null}
+              {stat.note ? <p className="mt-1.5 text-[0.6875rem] leading-snug text-white/45">{stat.note}</p> : null}
             </div>
           ))}
         </dl>
+
+        {/*
+          A provenance line. The figures are illustrative, and an illustrative
+          number presented in the same typeface as a measured one is the single
+          most misleading thing this card can do. Saying so on the card is what
+          separates a report from a poster.
+        */}
+        <p className="mt-6 border-t border-white/10 pt-4 text-[0.6875rem] leading-relaxed text-white/35">
+          Typical values for a heavy industrial combustion source. Illustrative
+          ranges, not measurements from this facility.
+        </p>
       </div>
     </div>
   );

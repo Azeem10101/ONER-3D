@@ -40,7 +40,7 @@ export const CARDS: Record<CardId, Card> = {
     id: "co2",
     symbol: "CO₂",
     name: "Carbon dioxide",
-    tagline: "The one you cannot see, and the one that lasts longest.",
+    tagline: "The fraction no scrubber can remove, and the fraction that persists longest in the atmosphere.",
     source:
       "Complete combustion of natural gas across the plant's boilers and Furnace #2. This is the exhaust product, not a malfunction — a perfectly efficient plant still emits it.",
     impact:
@@ -56,7 +56,7 @@ export const CARDS: Record<CardId, Card> = {
     id: "co",
     symbol: "CO",
     name: "Carbon monoxide",
-    tagline: "The signature of a fire that did not finish burning.",
+    tagline: "A direct indicator of incomplete combustion, and of a burner that is not performing to design.",
     source:
       "Incomplete combustion, concentrated in the burner of a poorly-tuned furnace. ONER's Isolation Forest flags this as the 'Furnace #2 — Thermal Efficiency Degradation' incident.",
     impact:
@@ -72,7 +72,7 @@ export const CARDS: Record<CardId, Card> = {
     id: "no2",
     symbol: "NO₂",
     name: "Nitrogen dioxide",
-    tagline: "The air takes its nitrogen and burns it too.",
+    tagline: "Formed in the flame from atmospheric nitrogen, not released directly by the plant.",
     source:
       "At the ~1500 °C inside a combustion chamber, atmospheric nitrogen and oxygen combine. The plant does not emit this directly — it is manufactured on site by heat alone.",
     impact:
@@ -88,7 +88,7 @@ export const CARDS: Record<CardId, Card> = {
     id: "so2",
     symbol: "SO₂",
     name: "Sulphur dioxide",
-    tagline: "What coal leaves behind when it burns.",
+    tagline: "A direct function of fuel sulphur content, and therefore a direct measure of fuel quality.",
     source:
       "Sulphur contained in fuel is oxidised during combustion and leaves with the flue gas. The more sulphur in the fuel, the more SO₂ — this tracks fuel quality as much as operating practice.",
     impact:
@@ -104,7 +104,7 @@ export const CARDS: Record<CardId, Card> = {
     id: "pm25",
     symbol: "PM₂.₅",
     name: "Fine particulate matter",
-    tagline: "The fraction small enough to cross into the bloodstream.",
+    tagline: "Defined by size alone: matter fine enough to pass from lung tissue into the circulation.",
     source:
       "Incomplete combustion and mechanical wear — grinding, conveying, and baghouse leakage. PM₂.₅ is defined purely by size: matter under 2.5 µm across.",
     impact:
@@ -122,7 +122,7 @@ export const CARDS: Record<CardId, Card> = {
     id: "nutrients",
     symbol: "N + P",
     name: "Nutrient loading",
-    tagline: "The lake is starving, and this is why.",
+    tagline: "The one pollutant this water body is actively short of, and the fastest-acting of the three.",
     source:
       "Nitrates and phosphates washed off the plant yard and carried in by the outfall. Plant nutrients are the one pollutant the lake is actively starved for.",
     impact:
@@ -138,7 +138,7 @@ export const CARDS: Record<CardId, Card> = {
     id: "metals",
     symbol: "Pb · Cd · Hg",
     name: "Heavy metals",
-    tagline: "They do not break down. They only move up the food chain.",
+    tagline: "No biological decay pathway. Concentration increases at each successive trophic level.",
     source:
       "Leaching from cooling towers, metal finishing, and corrosion of older infrastructure. Small, deliberate releases that never show up in an air emissions report.",
     impact:
@@ -154,7 +154,7 @@ export const CARDS: Record<CardId, Card> = {
     id: "thermal",
     symbol: "ΔT",
     name: "Thermal discharge",
-    tagline: "Waste heat is still waste, even when it is invisible.",
+    tagline: "The largest single flow leaving the site, and the least frequently permitted.",
     source:
       "Cooling water drawn from the lake and returned warmer. Often the largest single flow out of an industrial site, and the one most consistently excluded from pollution permitting.",
     impact:

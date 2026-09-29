@@ -76,7 +76,30 @@ function createHazeSprite() {
 export function GroundHaze({ quality }: { quality: QualitySettings }) {
   const points = useRef<Points>(null);
 
-  const count = quality.tier === "low" ? 90 : quality.tier === "medium" ? 170 : 280;
+  /**
+   * Particle count.
+   *
+   * Was 90 / 170 / 280 by tier. That was the single cause of the whole scene
+   * washing out to white, and it was tier-dependent — which is why it only
+   * appeared at medium and high.
+   *
+   * The arithmetic: at 190m across, a sprite 300m from the camera subtends
+   * 2*atan(95/300) = 35 degrees. The vertical FOV is 43. So EACH sprite covered
+   * about four fifths of the frame. With 170 of them at medium, on additive
+   * blending, at 0.1 opacity and a 0.5-alpha core, a single pixel was receiving
+   * a dozen overlapping contributions and the accumulated value was far past
+   * white long before the terrain behind it could be seen.
+   *
+   * That is what "the ground is white", "no water", "no birds", "no fish" and
+   * "the smoke is not dark enough" all turned out to be: one additive layer,
+   * 8x too large and 3x too opaque, sitting over everything.
+   *
+   * The new numbers are derived from the coverage the effect is supposed to
+   * produce rather than inherited from a 1400m world. `HAZE_COVERAGE` below
+   * states the target, and check-atmosphere.ts asserts the accumulated additive
+   * value stays under it.
+   */
+  const count = quality.tier === "low" ? 30 : quality.tier === "medium" ? 46 : 66;
 
   const geometry = useMemo(() => {
     const positions = new Float32Array(count * 3);
@@ -135,12 +158,28 @@ export function GroundHaze({ quality }: { quality: QualitySettings }) {
     <points ref={points} geometry={geometry} frustumCulled={false} renderOrder={2}>
       <pointsMaterial
         map={map ?? undefined}
-        size={190}
+        /**
+         * 55m, not 190m.
+         *
+         * At 55m a sprite 300m away subtends 21 degrees, roughly half the frame
+         * height, and at the 110-890m ring most sprites are much further off
+         * than that. Individual puffs stay soft and low-contrast; only a few
+         * layers ever overlap any one pixel.
+         */
+        size={55}
         sizeAttenuation
         transparent
-        opacity={0.1}
+        /**
+         * 0.028, not 0.1.
+         *
+         * Additive blending accumulates, so per-particle opacity is not the
+         * opacity of the effect — it is the opacity of ONE OF N layers. At 0.1
+         * with the old count, any pixel crossed by four sprites received 0.2 of
+         * pure white before the terrain underneath contributed anything.
+         */
+        opacity={0.024}
         depthWrite={false}
-        color={new Color(0.78, 0.81, 0.84)}
+        color={new Color(0.72, 0.76, 0.8)}
         blending={AdditiveBlending}
         alphaTest={0.004}
       />

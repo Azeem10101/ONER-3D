@@ -71,7 +71,7 @@ export function Factory() {
       ))}
 
       {/* Lower processing wing. */}
-      <mesh position={[-28, 4, 14]} castShadow receiveShadow>
+      <mesh position={[-24, 4, 14]} castShadow receiveShadow>
         <boxGeometry args={[20, 8, 16]} />
         <meshStandardMaterial color="#423831" roughness={0.9} />
       </mesh>
@@ -127,11 +127,20 @@ export function Factory() {
       </mesh>
 
       {/* Storage tanks. */}
+      {/*
+        Storage tanks.
+
+        The bank nearest the lake was moved inward from x = -40 to x = -30. At
+        the plant's scale that was the difference between the tank sitting inside
+        the shoreline and it sitting on the pad, and the inward move cost nothing
+        visually — the outfall end of the site now reads as deliberately left
+        clear, which is where the water narrative wants the eye to go.
+      */}
       {[
-        [-32, 3, -14],
-        [-40, 3.5, -4],
+        [-30, 3, -14],
+        [-24, 3.5, -4],
         [22, 3, 22],
-        [-24, 3, 26],
+        [-22, 3, 26],
       ].map((position, i) => (
         <mesh key={i} position={position as [number, number, number]} castShadow>
           <cylinderGeometry args={[5, 5, 6 + i, 20]} />
@@ -178,6 +187,88 @@ export function Factory() {
         <cylinderGeometry args={[1.4, 1.4, 1.2, 16]} />
         <meshStandardMaterial color="#2f2a26" roughness={0.9} />
       </mesh>
+
+      {/*
+        THE FAR YARD, in the half of the pad that only exists because the pad
+        became asymmetric.
+
+        The plant grew 11% with the last scale bump and the new pad runs out to
+        x = 128 — 61m beyond the edge of the buildings. That gap was showing as
+        bare levelled ground, which reads as a car park. Filling it with real
+        structures is what makes the extra pad look like the site expanding
+        rather than like the clearing being oversized.
+
+        Everything here is deliberately placed in +X and -Z, away from the lake:
+        logistics, storage and utilities do not belong between a plant and its
+        outfall, and putting them on this side keeps the water narrative's sight
+        line clean.
+      */}
+
+      {/* Long goods shed, running parallel to the main hall. */}
+      <mesh position={[42, 6, 14]} castShadow receiveShadow>
+        <boxGeometry args={[46, 12, 26]} />
+        <meshStandardMaterial color="#4a423a" roughness={0.92} />
+      </mesh>
+      {[-1, 0, 1].map((i) => (
+        <mesh key={`yard-vault-${i}`} position={[26 + i * 16, 14, 14]} castShadow>
+          <cylinderGeometry args={[6, 6, 25, 16, 1, false, 0, Math.PI]} />
+          <meshStandardMaterial color="#413931" roughness={0.88} />
+        </mesh>
+      ))}
+
+      {/* Silo bank. Vertical mass on the empty side, which is what stops the
+          far half of the site reading as flat ground from the opening
+          bird's-eye. */}
+      {[
+        [40, 9, -30],
+        [48, 8, -40],
+        [56, 10, -30],
+        [64, 7, -42],
+      ].map((position, i) => (
+        <group key={`silo-${i}`} position={position as [number, number, number]}>
+          <mesh castShadow>
+            <cylinderGeometry args={[6, 6, 18, 18]} />
+            <meshStandardMaterial color="#6a635b" roughness={0.78} metalness={0.18} />
+          </mesh>
+          <mesh position={[0, 9.6, 0]} castShadow>
+            <coneGeometry args={[6.4, 3.4, 18]} />
+            <meshStandardMaterial color="#575149" roughness={0.8} metalness={0.2} />
+          </mesh>
+        </group>
+      ))}
+
+      {/* Conveyor bridge from the goods shed to the main hall, so the far yard
+          is connected to the plant rather than sitting beside it. */}
+      <mesh position={[22, 15, 4]} rotation={[0, 0, -0.28]} castShadow>
+        <boxGeometry args={[34, 2.4, 3.2]} />
+        <meshStandardMaterial color="#4d463e" roughness={0.85} metalness={0.2} />
+      </mesh>
+      {[
+        [10, 8, 4],
+        [22, 12, 4],
+        [34, 16, 4],
+      ].map((position, i) => (
+        <mesh key={`bridge-leg-${i}`} position={position as [number, number, number]} castShadow>
+          <boxGeometry args={[1.2, 12, 1.2]} />
+          <meshStandardMaterial color="#463f37" roughness={0.9} />
+        </mesh>
+      ))}
+
+      {/* Transformer yard — a grid of units, which is the sort of small repeated
+          mass that makes an industrial site read as operated rather than
+          modelled. */}
+      <group position={[52, 0, 34]}>
+        <mesh position={[0, 0.4, 0]} receiveShadow>
+          <boxGeometry args={[30, 0.8, 20]} />
+          <meshStandardMaterial color="#3d3934" roughness={0.98} />
+        </mesh>
+        {Array.from({ length: 6 }, (_, i) => (
+          <mesh key={`tx-${i}`} position={[-11 + (i % 3) * 11, 2.4, i < 3 ? -5 : 5]} castShadow>
+            <boxGeometry args={[7, 3.6, 6]} />
+            <meshStandardMaterial color="#5a534b" roughness={0.72} metalness={0.35} />
+          </mesh>
+        ))}
+      </group>
     </group>
   );
 }

@@ -42,6 +42,10 @@ const fragmentShader = /* glsl */ `
   uniform vec3 uRockColor;
   uniform vec3 uSiltColor;
   uniform vec3 uPadColor;
+  /** Dry sand on the flats above the treeline. */
+  uniform vec3 uSandColor;
+  /** Darker, damp sand at the waterline. */
+  uniform vec3 uSandWetColor;
   uniform vec3 uFogColor;
   /**
    * [lowestDryHeight, highestHeight] in metres, measured from the same
@@ -53,8 +57,19 @@ const fragmentShader = /* glsl */ `
    * just never reaches the upper bands.
    */
   uniform vec2 uHeightRange;
+  /**
+   * Altitude above which vegetation stops, from the same terrainStats() the
+   * jungle scatter uses. The sand band is anchored to this so the two cannot
+   * disagree: a sand band keyed to anything else paints the forest.
+   */
+  uniform float uTreeline;
   uniform float uFogDensity;
-  uniform float uPadHalfX;
+  /**
+   * Pad extent toward the lake (-X) and away from it (+X). Asymmetric; see
+   * WORLD.factoryPadMaxX for why the shoreline only constrains one side.
+   */
+  uniform float uPadMinX;
+  uniform float uPadMaxX;
   uniform float uPadHalfZ;
   uniform vec3 uSunDirection;
   uniform vec3 uSunColor;
@@ -134,13 +149,49 @@ const fragmentShader = /* glsl */ `
 
     // The industrial pad. Desaturated on purpose, so the factory structures
     // later read as the subject rather than competing with the floor.
-    float pad = (1.0 - smoothstep(uPadHalfX, uPadHalfX * 1.35, abs(vWorldPosition.x)))
-              * (1.0 - smoothstep(uPadHalfZ, uPadHalfZ * 1.4, abs(vWorldPosition.z)));
+    //
+    // ASYMMETRIC in X, matching the carve in world.ts: the pad reaches
+    // uPadMinX toward the lake and uPadMaxX away from it. Using abs(x) here
+    // would mirror the short side back out to the long one and paint a
+    // symmetrical grey rectangle that does not line up with the ground it is
+    // supposed to be sitting on.
+    float padX = (1.0 - smoothstep(uPadMinX, uPadMinX * 1.35, -vWorldPosition.x))
+               * (1.0 - smoothstep(uPadMaxX, uPadMaxX * 1.22, vWorldPosition.x));
+    float pad = padX * (1.0 - smoothstep(uPadHalfZ, uPadHalfZ * 1.4, abs(vWorldPosition.z)));
     color = mix(color, uPadColor, pad * 0.9);
 
     // Large-scale tonal break-up. A perfectly uniform colour across hundreds
     // of metres is one of the strongest tells that terrain is procedural.
     color *= 0.87 + vDetail * 0.26;
+
+    // --- SAND ------------------------------------------------------------
+    // A pale coastal plain ABOVE THE TREELINE, so the horizon is land rather
+    // than an open wash of haze.
+    //
+    // Keyed to ELEVATION, not to distance from the origin: the treeline is a
+    // function of altitude, so colouring by radius would paint a concentric
+    // ring that reads instantly as a texture swatch.
+    //
+    // The band is anchored to uTreeline, the SAME number the vegetation scatter
+    // uses to stop growing trees, so the sand begins exactly where the forest
+    // ends.
+    //
+    // It was previously a hard-coded hT range of 0.40 to 0.84, and that covered
+    // 71.6% of the map. The treeline sits at hT 0.73 and the summit at 1.00, so
+    // the band swallowed the entire forest and left only the 4.7% that is
+    // genuinely treeless uncoloured. The result was a white landscape, which is
+    // the opposite of what was asked for. check-scene.ts now asserts the sand
+    // band starts at the treeline rather than below it.
+    float flat = smoothstep(uTreeline, uTreeline + (hMax - uTreeline) * 0.55, vHeight);
+    // Warped so the boundary is irregular. A treeline that follows a contour
+    // exactly is a contour line, and contour lines are the giveaway of
+    // procedural terrain.
+    float sandEdge = flat * (0.72 + 0.28 * valueNoise(vWorldPosition.xz * 0.0032));
+    color = mix(color, uSandColor, clamp(sandEdge, 0.0, 1.0));
+
+    // Damp margin at the water's edge, so the shore does not meet the lake with
+    // a hard line of saturated colour.
+    color = mix(color, uSandWetColor, (1.0 - smoothstep(0.0, 2.8, vHeight)) * 0.5);
 
     // --- Lighting -------------------------------------------------------
     // Wrapped diffuse. A hard N·L terminates at the terminator, which on
@@ -341,23 +392,41 @@ export function Terrain({ quality }: { quality: QualitySettings }) {
 
   const uniforms = useMemo(
     () => ({
-      // Vibrant tropical palette. The previous values were so dark and so
-      // desaturated that the ground read as bare black-green nothing, and the
-      // forest looked like it was sitting on a void.
-      uLowColor: { value: new Color("#2c4a1e") }, // wet jungle soil
-      uMidColor: { value: new Color("#4a7a2a") }, // scrub and canopy shadow
-      uHighColor: { value: new Color("#6d7a4e") }, // upper exposed slopes
-      uRockColor: { value: new Color("#7a7872") }, // bare rock
-      uSiltColor: { value: new Color("#4a4432") }, // lake bed silt
-      uPadColor: { value: new Color("#6e6a60") }, // compacted industrial ground
+      /**
+       * Vibrant tropical ground.
+       *
+       * Lifted last round out of near-black (#1a2415 / #2c3a1f), which fixed
+       * "the ground reads as a void" and then overshot into "the ground is
+       * washed out". The previous values sat around 20-30% luminance, and with
+       * a 3.4-intensity sun and a hemisphere fill on top they landed as a muddy
+       * mid-grey-green rather than as foliage.
+       *
+       * Saturated and mid-bright is the target. A real canopy photograph is
+       * neither near-black nor pastel, and the saturation is what carries it
+       * more than the level.
+       */
+      uLowColor: { value: new Color("#2f5c1c") }, // wet jungle soil, in leaf shade
+      uMidColor: { value: new Color("#4e9024") }, // canopy, the dominant green
+      uHighColor: { value: new Color("#7d9a3c") }, // sunlit scrub, upper slopes
+      uRockColor: { value: new Color("#8a8880") }, // bare rock on steep faces
+      uSiltColor: { value: new Color("#5a5340") }, // lake bed silt
+      uPadColor: { value: new Color("#75705f") }, // compacted industrial ground
+      // Warm, desaturated sand. Kept well below white: a pale surface under a
+      // low sun blows out to pure white across its whole area, which is what
+      // produced the flat white horizon this replaces. These sit around 55-65%
+      // luminance so there is still tonal range to shade.
+      uSandColor: { value: new Color("#b8a780") },
+      uSandWetColor: { value: new Color("#8a7c5c") },
       uFogColor: { value: new Color(FOG_COLOR) },
       uFogDensity: { value: FOG_DENSITY },
-      uPadHalfX: { value: WORLD.factoryPadHalf.x },
+      uPadMinX: { value: WORLD.factoryPadHalf.x },
+      uPadMaxX: { value: WORLD.factoryPadMaxX },
       uPadHalfZ: { value: WORLD.factoryPadHalf.z },
       // Measured once from the same height function that builds this mesh, so
       // the colour bands stay correct through any future change to the terrain
       // shape. See the comment on the uniform.
       uHeightRange: { value: new Vector2(stats.min, stats.max) },
+      uTreeline: { value: stats.treeline },
       uSunDirection: {
         value: new Vector3(SUN_DIRECTION.x, SUN_DIRECTION.y, SUN_DIRECTION.z).normalize(),
       },
@@ -369,7 +438,7 @@ export function Terrain({ quality }: { quality: QualitySettings }) {
     // `stats` is a memoised singleton (see terrainStats), so these are stable
     // for the lifetime of the page. Listed explicitly so the dependency is
     // honest rather than relying on that.
-    [stats.min, stats.max]
+    [stats.min, stats.max, stats.treeline]
   );
 
   // The fog term needs the camera's world position, which the uniform cannot
