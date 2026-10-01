@@ -11,17 +11,12 @@
   --font-mono: var(--font-geist-mono);
 }
 
-:root {
-  --card-accent: #6b7280;
-  --card-edge: color-mix(in oklab, var(--card-accent) 55%, transparent);
-}
-
 * {
   box-sizing: border-box;
 }
 
 html {
-  /* The canvas is fixed and full-bleed; without this, sub-pixel rounding on
+  /* The video is fixed and full-bleed; without this, sub-pixel rounding on
      the oversized content column can show a scrollbar on the right. */
   overflow-x: hidden;
   scroll-behavior: smooth;
@@ -36,80 +31,40 @@ body {
 }
 
 /* ---------------------------------------------------------------------------
-   Card layer
-   Cards are driven by JS writing `opacity` and `--card-shift` directly, never
-   by React state, so scrolling never triggers a re-render.
+   Beat text layer
+
+   The footage carries its own metric annotations burnt into the pixels — CO,
+   NO₂, PM₂.₅, SO₂, the outfall load — so there is no card panel any more. Every
+   one of those metrics used to appear twice per frame, once in our typography
+   and once in the video's. What the video cannot do is explain why a number
+   matters, so that is all this layer does: a heading, a paragraph, and the
+   threshold it is measured against.
+
+   Driven by JS writing `opacity` and `--shift` directly, never by React state,
+   so scrolling never triggers a re-render.
+
+   No background, no border, no blur. A panel sitting on top of moving footage
+   is a rectangle over the image, and the footage is the point. Legibility comes
+   from a gradient scrim on the section behind the text, which follows the
+   content instead of boxing it.
    --------------------------------------------------------------------------- */
 
-.card-panel {
+.beat {
   opacity: 0;
-  transform: translate3d(0, var(--card-shift, 0px), 0);
+  transform: translate3d(0, var(--shift, 0px), 0);
   will-change: opacity, transform;
   pointer-events: none;
+  text-wrap: balance;
+  /* A soft darkening behind the column so white text stays readable over
+     whatever the camera happens to be pointing at. Elliptical and offset, so it
+     never reads as a box. */
+  text-shadow:
+    0 1px 2px rgb(0 0 0 / 0.55),
+    0 2px 24px rgb(0 0 0 / 0.45);
 }
 
-.card-panel[data-active="true"] {
+.beat[data-active="true"] {
   pointer-events: auto;
-}
-
-.card-shell {
-  position: relative;
-  overflow: hidden;
-  border: 1px solid var(--card-edge);
-  /* A 1.25rem radius is a consumer-app convention — it reads as friendly and
-     rounded rather than as a technical readout. 0.375rem is what an
-     instrument panel or a data sheet uses, and it is the single change that
-     moves the whole card from "app" toward "report". */
-  border-radius: 0.375rem;
-  background: linear-gradient(
-    180deg,
-    /* The accent wash was 14% of the card's own hue, which tinted the whole
-       panel and made eight cards look like eight different products. Down to
-       7%, enough to link the panel to its metric without dyeing the reading
-       surface. */
-    color-mix(in oklab, var(--card-accent) 7%, rgb(9 14 13 / 0.9)),
-    rgb(9 14 13 / 0.94)
-  );
-  backdrop-filter: blur(18px) saturate(1.15);
-  box-shadow:
-    0 24px 70px -20px rgb(0 0 0 / 0.75),
-    inset 0 1px 0 rgb(255 255 255 / 0.06);
-}
-
-/* A hairline of the card's accent along the top edge — the same colour that
-   tints the 3D marker, so the two layers read as one system. */
-.card-shell::before {
-  content: "";
-  position: absolute;
-  inset: 0 0 auto 0;
-  height: 2px;
-  background: linear-gradient(
-    90deg,
-    transparent,
-    var(--card-accent) 22%,
-    var(--card-accent) 78%,
-    transparent
-  );
-}
-
-.card-symbol {
-  font-family: var(--font-mono), ui-monospace, monospace;
-  font-weight: 600;
-  letter-spacing: -0.03em;
-  line-height: 0.9;
-  color: var(--card-accent);
-  /* The 34px text-shadow glow was the other app-ish tell: it made the symbol
-     look like a game HUD element. The colour alone carries the association
-     with the 3D marker, which is tinted the same way. */
-  text-shadow: none;
-}
-
-/* A hairline rule under the symbol block, so the headline and the body copy
-   separate on structure rather than on whitespace alone. */
-.card-rule {
-  height: 1px;
-  background: linear-gradient(90deg, var(--card-accent) 0%, rgb(255 255 255 / 0.06) 45%, transparent 100%);
-  opacity: 0.55;
 }
 
 /* ---------------------------------------------------------------------------

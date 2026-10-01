@@ -1,46 +1,39 @@
 "use client";
 
-import dynamic from "next/dynamic";
-import { QualityProvider } from "./three/QualityGate";
 import { ScrollProvider } from "./scroll/ScrollProvider";
+import { VideoLayer } from "./video/VideoLayer";
 import { Overlays } from "./overlays/Overlays";
 import { Diagnostics } from "./dev/Diagnostics";
 
 /**
- * The WebGL layer is loaded client-side only, for two reasons:
+ * The whole experience: one fixed video layer, one tall scroll column, and one
+ * rAF loop driving both the playhead and the text.
  *
- *   1. Three.js touches `window` at module scope, and GPU detection calls
- *      `getContext("webgl")`, so importing any of this during SSR throws.
- *      `ssr: false` is the supported opt-out in the App Router — and per the
- *      Next.js docs it only works inside a Client Component, which is why this
- *      file has "use client" at the top.
+ * ## What this used to be
  *
- *   2. Deferring it means the scroll column and the opening title are painted
- *      by the server first. The viewer sees text immediately while the WebGL
- *      bundle is still arriving, instead of a black rectangle.
- */
-const Scene = dynamic(() => import("./three/Scene").then((mod) => mod.Scene), {
-  ssr: false,
-  loading: () => <div className="fixed inset-0 z-0 bg-[#9ea7ad]" aria-hidden />,
-});
-
-/**
- * The whole experience: one fixed 3D scene, one tall scroll column, one rAF
- * loop driving the overlays, and one render loop driving the camera.
+ * <Scene> — a React Three Fiber canvas holding a procedurally generated
+ * landscape: terrain, jungle scatter, water shader, particle plume, birds, fish,
+ * an analytic sky and a 16-shot camera rig. It was about 4,000 lines across
+ * thirteen components, plus a world generator, a quality-tier system with an
+ * adaptive scaler, and six validation scripts that asserted things about
+ * terrain relief, camera seam velocity, sprite budgets and fish placement.
  *
- * <QualityProvider> wraps everything and renders nothing until GPU detection
- * completes, which is why <Scene> sits inside it — the scene needs the
- * resolved tier to size its render targets correctly on first mount.
+ * All of it is gone. It was replaced by a 10-second video of the same story,
+ * generated elsewhere, which is both far better looking and a fraction of the
+ * maintenance. Nothing about a <video> needs a quality tier.
+ *
+ * The parts worth keeping were kept: native document scroll, the progress store,
+ * the fixed HUD, the progress rail, and the intro/outro treatment. The scroll
+ * store is now read by two rAF loops instead of by a render loop, which is the
+ * only interface the old system had with the new one.
  */
 export function Journey() {
   return (
-    <QualityProvider>
-      <ScrollProvider>
-        <Scene />
-        <Overlays />
-        {/* Dev-only, and tree-shaken out of production builds. */}
-        <Diagnostics />
-      </ScrollProvider>
-    </QualityProvider>
+    <ScrollProvider>
+      <VideoLayer />
+      <Overlays />
+      {/* Dev-only, and tree-shaken out of production builds. */}
+      <Diagnostics />
+    </ScrollProvider>
   );
 }
