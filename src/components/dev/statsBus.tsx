@@ -75,6 +75,14 @@ export type VideoStats = {
    * side by side.
    */
   soundPictureTime: number;
+  /**
+   * Current playbackRate, where 1 is normal speed.
+   *
+   * This is the bed's steering, not a defect: while scrubbing it rises above 1
+   * to chase the picture, and settles back to 1 when the reader stops. Watching
+   * it is how you tell "chasing" from "stuck", which look identical otherwise.
+   */
+  soundRate: number;
 };
 
 const stats: VideoStats = {
@@ -96,6 +104,7 @@ const stats: VideoStats = {
   soundVolume: 0,
   soundTime: 0,
   soundPictureTime: 0,
+  soundRate: 0,
 };
 
 const listeners = new Set<(value: VideoStats) => void>();

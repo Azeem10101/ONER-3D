@@ -305,6 +305,40 @@ if (existsSync(mediaPath)) {
       `WORST gap ${worstGap.toFixed(3)}s (${(worstGap * fps).toFixed(0)} frames)`
   );
 
+  // Resolution, and what the browser then has to do to it.
+  //
+  // Blur is not a filter problem, it is a magnification problem: the browser was
+  // being asked to stretch 1280 columns across a 2168px viewport, a 1.94x
+  // upscale. Measured across bilinear, bicubic, lanczos and spline at that size,
+  // every resampler scored within 0.01 of every other — which is the point. The
+  // ceiling is set by the source, not by the filter used to stretch it.
+  //
+  // So the fix is to pre-upscale once at encode time to a resolution much closer
+  // to the display, leaving the browser about 1.13x of work. That does not add
+  // detail that was never captured; it stops the compositor's own scaling from
+  // being the weakest link in the chain.
+  // Width and height are the last two 16.16 fixed-point fields in `tkhd`, so they
+// are read relative to the end of the box. Offsets from the start would depend
+// on the box version, since v0 and v1 differ in the size of the creation and
+// modification timestamps.
+const tkhd = boxes.get("tkhd");
+const width = tkhd ? buf.readUInt32BE(tkhd.end - 8) >>> 16 : 0;
+const height = tkhd ? buf.readUInt32BE(tkhd.end - 4) >>> 16 : 0;
+  if (width && height) {
+    // object-cover scales to cover, so the larger of the two axis ratios wins.
+    const scale = Math.max(2168 / width, 1400 / height);
+    console.log(
+      `  ${width}x${height} · the browser magnifies ${scale.toFixed(2)}x at 2168x1400`
+    );
+    check(
+      "the source resolution leaves the browser little work to do",
+      scale <= 1.35,
+      `the browser has to magnify ${scale.toFixed(2)}x, and that is the blur. ` +
+        `No resampler recovers detail that was never captured — only a ` +
+        `higher-resolution re-render fixes this properly.`
+    );
+  }
+
   check(
     "keyframe density is high enough that a seek is cheap",
     keyframes >= 15,
@@ -586,39 +620,59 @@ const audioCode = audioSource
   .replace(/\/\*[\s\S]*?\*\//g, "")
   .replace(/^[ \t]*\/\/.*$/gm, "");
 
+// The bed is Web Audio now, so these assert the graph's shape rather than the
+// `<audio>` API's. See the header of AudioBed.tsx for why `<audio>` could not
+// work: `currentTime` is a seek, and seeking a media element ~34 times a second
+// restarts the decoder that often. The reader reported it as sound that
+// "breaks a lot", which was not a tuning problem but an architectural one.
 check(
-  "the bed has no settle gate at all",
-  !/settling/.test(audioCode) && !/settleTimer/.test(audioCode) && !/SETTLE_MS/.test(audioCode),
-  "the bed must track the picture continuously. Gating it behind 'scrolling has " +
-    "stopped' is what made it desynchronise: it only ever re-positioned on the " +
-    "branch taken when audio was PAUSED, so while it played it never tracked the " +
-    "scroll. The panel read video 5.29s / sound 0.00s while reporting 'playing'."
+  "the bed is Web Audio, not a media element being seeked",
+  /createBufferSource/.test(audioCode) && /decodeAudioData/.test(audioCode) &&
+    !/currentTime\s*=/.test(audioCode),
+  "assigning currentTime per frame is a decoder restart per frame"
 );
 
 check(
-  "the bed is slaved to the picture on BOTH branches, not only when paused",
-  /seekToward\(/.test(audioCode) &&
-    /moving[\s\S]{0,400}seekToward/.test(audioCode) &&
-    /else\s*\{[\s\S]{0,400}setTime\(target\)/.test(audioCode),
-  "the playhead must follow the picture while playing as well as while paused"
+  "the clip is decoded once, in full",
+  /await\s+ctx\.decodeAudioData/.test(audioCode),
+  "re-decoding on every move is the cost this design exists to avoid"
 );
 
 check(
-  "play() is called from inside the toggle's user gesture",
-  /soundStore\.subscribe\(/.test(audioCode) && /audio\.play\(\)/.test(audioCode),
-  "play() from a rAF callback can be refused by autoplay policy"
+  "scrubbing steers with playbackRate, which is a resampler not a seek",
+  /playbackRate\.setTargetAtTime/.test(audioCode),
+  "playbackRate moves the playhead continuously and cannot click"
 );
 
 check(
-  "the toggle seeks before it plays, so it starts in the right place",
-  /setTime\(scrollStore\.smoothed/.test(audioCode),
-  "switching the bed on mid-scroll must not start it at zero"
+  "the steering rate is clamped, so a fling cannot produce a siren",
+  /MAX_RATE/.test(audioCode) && /Math\.max\(-MAX_RATE/.test(audioCode),
+  "an unbounded rate pitch-shifts the bed into a broken tape"
 );
 
 check(
-  "scrubbing slides the playhead rather than jumping it",
-  /Math\.sign\(delta\)\s*\*\s*limit/.test(audioCode),
-  "a hard currentTime assignment per frame is a discontinuity and clicks"
+  "the bed re-anchors only while at rest",
+  /REANCHOR/.test(audioCode) && /anchor\(target\)/.test(audioCode),
+  "re-anchoring mid-scrub is the discontinuity the rate limiter exists to avoid"
+);
+
+check(
+  "the AudioContext is created inside the toggle's gesture",
+  /soundStore\.subscribe\(/.test(audioCode) && /new Ctor\(\)/.test(audioCode),
+  "a context created outside a gesture starts suspended and logs a warning"
+);
+
+check(
+  "a suspended context is resumed, for tab switches and sleep",
+  /ctx\.state\s*===\s*"suspended"/.test(audioCode) && /ctx\.resume\(\)/.test(audioCode),
+  "browsers suspend the context whenever the tab is hidden; without a resume the " +
+    "bed is silently dead on return"
+);
+
+check(
+  "the bed has no settle gate",
+  !/settling/.test(audioCode) && !/settleTimer/.test(audioCode),
+  "gating the bed behind 'scrolling has stopped' is what made it desynchronise"
 );
 
 check(
@@ -629,9 +683,9 @@ check(
 );
 
 check(
-  "the bed is not looped",
-  !/\bloop\b/.test(audioCode),
-  "looping the ambient bed would desynchronise it from the picture"
+  "the bed renders no DOM element",
+  /return null;/.test(audioCode) && !/<audio/.test(audioCode),
+  "there is no media element left to accidentally seek"
 );
 
 console.log();
