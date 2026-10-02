@@ -67,32 +67,36 @@ export type Beat = {
 /**
  * Five beats, not six.
  *
- * ## The boundaries are read off the footage, not chosen
+ * ## The boundaries are read off THIS clip, and the clip has changed
  *
- * The first version of this file had one beat per pollutant, on the assumption
- * that the video's annotations appeared one at a time. Sampling the clip every
- * 0.4s shows they do not. They are cumulative:
+ * The boundaries are not stylistic choices — they are the times at which this
+ * particular video puts its annotations on screen. They were measured by
+ * sampling the footage every 0.4s and looking at what was actually labelled.
  *
- *     2.0 - 2.8s   no annotation
- *     3.2 - 4.0s   CO and NO₂
- *     4.4 - 5.2s   CO, NO₂, PM₂.₅ and SO₂ all four at once
- *     6.0 - 6.4s   fading, camera pulling back to the aerial
- *     8.8s+        Nitrogen and Phosphorus at the outfall
+ * Measured on the current clip (gemini_generated_video_0169f839):
  *
- * So the labels group into two moments, not four: a pair, then all four. Timing
- * prose to a beat per pollutant put the PM₂.₅ text under a frame showing SO₂,
- * because the video simply never showed PM₂.₅ on its own. Four beats is the
- * honest structure, and it is also what the picture supports.
+ *     2.6s          no annotation yet
+ *     2.9 - 4.4s    CO and NO₂
+ *     4.1 - 5.2s    all four: CO, NO₂, PM₂.₅ and SO₂
+ *     5.2 - 6.0s    fading
+ *     6.0 - 8.4s    camera retreating to the aerial
+ *     8.5s+         Nitrogen and Phosphorus at the outfall
  *
- * Re-verify with the frame-sampling approach in scripts/ if the video is ever
- * replaced — do not assume these numbers still hold.
+ * The previous clip was timed differently — CO arrived at 3.2s rather than 2.9s,
+ * and the four-label moment ran 4.4-5.6s rather than 4.1-5.2s. Copy timed to one
+ * clip lands under the wrong frame on the next, silently, with nothing to notice
+ * it. **If the video is ever replaced, re-measure these numbers; do not carry
+ * them across.**
+ *
+ * Two labels per beat, not one per pollutant, because the video never shows them
+ * one at a time. At 4.4s all four are on screen simultaneously.
  */
 export const BEATS: Beat[] = [
   {
     id: "site",
     label: "The site",
     start: 0,
-    end: 3.05,
+    end: 2.85,
     heading: "Orion Manufacturing Plant",
     body:
       "Eleven hundred acres of rainforest, cleared once. A pulp and paper mill, a thermal generator, and a lake that used to belong to the trees. The plume leaves all of it from three stacks, and everything downstream starts here.",
@@ -102,8 +106,8 @@ export const BEATS: Beat[] = [
   {
     id: "co-no2",
     label: "CO and NO₂",
-    start: 3.05,
-    end: 4.45,
+    start: 2.85,
+    end: 4.1,
     heading: "CO, and the NO₂ it makes for you",
     body:
       "Carbon monoxide is a direct read on incomplete combustion — a burner not performing to design. NO₂ is not released at all: at 1500 °C inside the chamber, atmospheric nitrogen and oxygen combine, so the molecule is manufactured on site by heat alone.",
@@ -116,8 +120,8 @@ export const BEATS: Beat[] = [
   {
     id: "pm25-so2",
     label: "PM₂.₅ and SO₂",
-    start: 4.45,
-    end: 6.35,
+    start: 4.1,
+    end: 5.6,
     heading: "PM₂.₅, and SO₂ as a fuel-quality reading",
     body:
       "Particulate matter is defined by size alone: under 2.5 µm, fine enough to pass from lung tissue into the blood. Sulphur dioxide tracks fuel sulphur content, so it measures fuel quality as much as operating practice — and oxidises further into sulphuric acid before it returns as acid rain.",
@@ -130,8 +134,8 @@ export const BEATS: Beat[] = [
   {
     id: "drift",
     label: "Downwind",
-    start: 6.35,
-    end: 8.55,
+    start: 5.6,
+    end: 8.45,
     heading: "None of it stays here",
     body:
       "What leaves the stacks does not stop at the property line. The plume flattens, spreads, and mixes into the same air the valley shares. CO₂ accumulates on a century-plus timescale, so every tonne released adds to a lasting balance rather than a passing one.",
@@ -141,7 +145,7 @@ export const BEATS: Beat[] = [
   {
     id: "water",
     label: "Nutrient loading",
-    start: 8.55,
+    start: 8.45,
     end: VIDEO_DURATION,
     heading: "N + P — nutrient loading",
     body:
