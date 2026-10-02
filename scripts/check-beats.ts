@@ -106,6 +106,16 @@ if (existsSync(audioPath)) {
     audioBytes < 512 * 1024,
     `${(audioBytes / 1024).toFixed(0)} KB`
   );
+
+  // The bed is trimmed to the picture's length so the two cannot drift apart.
+  // It was 10.027s against 9.934s of mapped scroll, which is 93ms of bed with
+  // no picture attached — the exact region the runtime used to run out inside.
+  const audioSeconds = durationFromMp4(audioPath);
+  check(
+    "the bed is trimmed to the picture's length",
+    audioSeconds !== null && Math.abs(audioSeconds - VIDEO_DURATION) < 0.05,
+    `bed is ${audioSeconds?.toFixed(3)}s against ${VIDEO_DURATION}s of picture`
+  );
   // An m4a carries its own moov, and the bed has to be playable the instant the
   // reader hits the toggle. A moov at the end means a round trip first.
   const audioHead = readFileSync(audioPath).subarray(0, 4096).toString("latin1");
@@ -686,6 +696,38 @@ check(
   "the bed renders no DOM element",
   /return null;/.test(audioCode) && !/<audio/.test(audioCode),
   "there is no media element left to accidentally seek"
+);
+
+// --- Three failures that shipped, each now structurally impossible ---------
+//
+// All three were found by reading the reader's own diagnostics panel rather than
+// by reasoning about the code, which is worth recording: every one of them looked
+// correct in isolation.
+check(
+  "a fast scroll cannot leave the steering permanently engaged",
+  /REANCHOR_HARD/.test(audioCode) && /Math\.abs\(error\)\s*>\s*REANCHOR_HARD/.test(audioCode),
+  "with only a rate-based clamp, scrolling faster than MAX_RATE left the bed " +
+    "permanently behind, so the error never fell, the steering never released, " +
+    "and it sat at the scrub level with a growing offset forever. The panel read " +
+    "vol 0.34 with the sound ahead of the picture and not closing."
+);
+
+check(
+  "the bed is band-limited while scrubbing",
+  /BiquadFilter|createBiquadFilter/.test(audioCode) &&
+    /SCRUB_CUTOFF/.test(audioCode) &&
+    /setTone\(/.test(audioCode),
+  "a resampler shifts the whole spectrum, so varispeed ambient at 3.5x is a " +
+    "chipmunk siren. Band-limiting it while the rate is off-normal is what makes " +
+    "it sound like a transport scrub instead of a broken file."
+);
+
+check(
+  "the bed never rewinds itself to the start at the end of the clip",
+  !/anchor\(0\)/.test(audioCode),
+  "the tail used to re-anchor at 0, which yanked the sound back to the jungle " +
+    "while the reader was looking at the lake. That was the reported 'unpleasant " +
+    "sound near the water'."
 );
 
 console.log();
