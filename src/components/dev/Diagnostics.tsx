@@ -118,7 +118,22 @@ export function Diagnostics() {
               </span>
               <span className="text-white/40">
                 {" "}
-                vol {stats.soundVolume.toFixed(2)} @ {stats.soundTime.toFixed(2)}s
+                vol {stats.soundVolume.toFixed(2)}
+              </span>
+              <span
+                className="ml-1"
+                style={{
+                  color:
+                    Math.abs(stats.soundTime - stats.soundPictureTime) > 0.25
+                      ? "#fca5a5"
+                      : "rgba(255,255,255,0.4)",
+                }}
+              >
+                sound {stats.soundTime.toFixed(2)}s / picture{" "}
+                {stats.soundPictureTime.toFixed(2)}s
+                {Math.abs(stats.soundTime - stats.soundPictureTime) > 0.25
+                  ? " — DRIFT"
+                  : ""}
               </span>
             </dd>
           </dl>

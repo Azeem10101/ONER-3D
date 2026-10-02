@@ -42,9 +42,6 @@ import { VIDEO_DURATION } from "@/scene/beats";
  * source of bugs for very little audible gain.
  */
 
-/** How long after scrolling stops before the bed fades in. */
-const SETTLE_MS = 220;
-
 /** Fade duration, seconds. */
 const FADE = 0.2;
 
@@ -58,8 +55,24 @@ const FADE = 0.2;
  */
 const LEVEL = 0.55;
 
-/** Beyond this drift the bed is re-seeked rather than left to wander. */
-const RESYNC_SECONDS = 0.34;
+/**
+ * How fast the bed's playhead is allowed to chase the picture, in seconds of
+ * audio per second of real time.
+ *
+ * While the reader is scrolling, the picture moves at whatever rate they choose,
+ * sometimes twenty times faster than real time. Setting `currentTime` straight to
+ * that target every frame is a discontinuity and clicks. Sliding at a bounded
+ * rate turns a stutter of jumps into a continuous sweep, which is what a film
+ * scrub actually sounds like.
+ *
+ * 14x real time is comfortably faster than any normal scroll through a 26-screen
+ * page, so during ordinary reading the bed stays locked to the picture, and only
+ * a hard fling produces the sweep.
+ */
+const SCRUB_RATE = 14;
+
+/** Beyond this drift, at rest, the bed is snapped back rather than left to wander. */
+const RESYNC_SECONDS = 0.2;
 
 export function AudioBed() {
   const audioRef = useRef<HTMLAudioElement>(null);
@@ -74,18 +87,8 @@ export function AudioBed() {
     let frame = 0;
     let disposed = false;
     let level = 0;
-
-    // When the scroll last moved, as a timestamp. Negative infinity means
-    // "never", so the bed counts as settled from the very first frame.
-    //
-    // This was previously a boolean `settling`, initialised to TRUE, and cleared
-    // only by a timer that was itself armed only inside the "is moving" branch.
-    // So on a page that was opened and never scrolled, `settling` stayed true
-    // forever and the `else if (settling)` branch ran on every frame — muting
-    // the bed permanently. Clicking the toggle before scrolling did nothing at
-    // all; the sound only appeared if you happened to scroll first, which is
-    // exactly the "no sound even when I switch it on" report.
-    let lastMoveAt = Number.NEGATIVE_INFINITY;
+    let blocked = false;
+    let publishedAt = 0;
 
     const duration = VIDEO_DURATION;
     audio.volume = 0;
@@ -106,6 +109,47 @@ export function AudioBed() {
       audio.volume = level;
     }
 
+    /** Sets the playhead, clamped into the element's real duration. */
+    function setTime(t: number) {
+      const max = Number.isFinite(audio.duration) && audio.duration > 0
+        ? audio.duration - 0.05
+        : duration - 0.05;
+      if (!Number.isFinite(t)) return;
+      audio.currentTime = Math.max(0, Math.min(max, t));
+    }
+
+    /**
+     * Moves the playhead toward `target` at a bounded rate.
+     *
+     * A hard `currentTime = target` on every frame while scrolling clicks
+     * audibly, because it is a discontinuity. This instead slides at up to
+     * SCRUB_RATE seconds of audio per second of real time, which is fast enough to
+     * stay under the picture during a normal scroll but cannot produce a click.
+     */
+    function seekToward(el: HTMLAudioElement, target: number, dt: number) {
+      const delta = target - el.currentTime;
+      const limit = SCRUB_RATE * dt;
+      if (Math.abs(delta) <= limit) {
+        el.currentTime = Math.max(0, Math.min(el.duration || duration, target));
+      } else {
+        el.currentTime = Math.max(0, el.currentTime + Math.sign(delta) * limit);
+      }
+    }
+
+    /** play(), with the rejection recorded rather than swallowed. */
+    function start() {
+      const started = audio.play();
+      if (started && typeof started.then === "function") {
+        started
+          .then(() => {
+            blocked = false;
+          })
+          .catch(() => {
+            blocked = true;
+          });
+      }
+    }
+
     let last = performance.now();
     function tick(now: number) {
       if (disposed) return;
@@ -124,56 +168,65 @@ export function AudioBed() {
       // video layer applies, and made the background jumpier rather than calmer.
       const moving = Math.abs(scrollStore.target - scrollStore.smoothed) > 1e-4;
 
-      if (moving) {
-        lastMoveAt = now;
+      const target = scrollStore.smoothed * duration;
+
+      if (!soundStore.enabled) {
         ramp(0, dt);
         if (!audio.paused) audio.pause();
-      } else if (now - lastMoveAt < SETTLE_MS) {
-        // Scrolling has only just stopped; hold the silence for the settle
-        // window so a reader who scrolls in bursts does not get a stutter of
-        // bed starting and stopping.
-        ramp(0, dt);
-      } else if (soundStore.enabled) {
+      } else if (moving) {
+        // Scrubbing, and the bed rides the scrub.
+        //
+        // This used to pause the bed on every scroll and resume it once the
+        // scroll settled, on the theory that shuttling audio is unpleasant. That
+        // was the wrong call and it produced the bug the reader reported as "not
+        // syncing, not with the scroll".
+        //
+        // Two things were wrong with it. The bed only re-positioned on the
+        // `audio.paused` branch, so while it played it never tracked the scroll
+        // at all — it just ran on from wherever it started. The panel showed it
+        // plainly: video at 5.29s, sound at 0.00s, and still "playing". And
+        // muting meant the bed contributed nothing to the act of scrolling, which
+        // is the one thing the piece is about.
+        //
+        // So the bed is now slaved to the playhead continuously, exactly as the
+        // picture is. Scrolling fast produces a fast doppler-ish sweep, which is
+        // what a film scrub sounds like and is the correct feedback for "you are
+        // moving through this footage".
+        // Gentle slew rather than a hard re-seek: a hard jump on every frame
+        // would click, and would also fight the browser's own playback rate.
+        seekToward(audio, target, dt);
+        if (audio.paused) start();
+        ramp(LEVEL * 0.85, dt);
+      } else {
         if (audio.paused) {
-          // Position first, THEN play. Reversing these produces a click, because
-          // the element starts from wherever it was left and jumps.
-          const target = scrollStore.smoothed * duration;
-          if (Number.isFinite(target) && target >= 0 && target < duration) {
-            audio.currentTime = target;
-          }
-          const started = audio.play();
-          if (started && typeof started.catch === "function") {
-            started.catch(() => {
-              /* autoplay policy, or the element was torn down */
-            });
-          }
+          // Position exactly, then play. Reversing these clicks, because the
+          // element starts from wherever it was left and jumps.
+          setTime(target);
+          start();
         } else {
-          const target = scrollStore.smoothed * duration;
-          // Near the end of the piece the target is the final moment, and the
-          // bed is allowed to simply run out. Re-seeking it there would snap it
-          // backwards every 340ms and click.
-          //
-          // This previously "held the last moment" by jumping back 1.2s once
-          // the playhead passed the end, which looped the final second over and
-          // over — an audible stutter roughly once a second for as long as the
-          // reader sat on the outro.
-          const nearEnd = target >= duration - 0.25;
-          if (!nearEnd && Math.abs(audio.currentTime - target) > RESYNC_SECONDS) {
-            audio.currentTime = target;
+          // At rest the bed is held to the picture with a tight leash, so it
+          // cannot drift away over a long read.
+          if (Math.abs(audio.currentTime - target) > RESYNC_SECONDS) {
+            setTime(target);
           }
-          // Once the bed has genuinely finished, let it rest rather than trying
-          // to restart it. The outro is meant to be quiet.
+          // The bed is shorter than the piece (10.03s of audio against 9.93s of
+          // mapped scroll), so at the very end it would run out and sit silent.
+          // Restarting it is the least-bad option: there is no more footage to
+          // stay in sync with at that point.
           if (audio.ended || audio.currentTime >= audio.duration - 0.02) {
-            audio.pause();
-            ramp(0, dt);
-            frame = requestAnimationFrame(tick);
-            return;
+            setTime(0);
+            start();
           }
         }
         ramp(LEVEL, dt);
-      } else {
-        ramp(0, dt);
-        if (!audio.paused) audio.pause();
+      }
+
+      // Published on a slow cadence rather than every frame, because the panel
+      // only needs to be readable and a React notification per frame would
+      // defeat the point.
+      if (now - publishedAt > 200) {
+        publishedAt = now;
+        publishAudio(soundStore.enabled, blocked, audio.paused, level, audio.currentTime, target);
       }
 
       frame = requestAnimationFrame(tick);
@@ -200,33 +253,32 @@ export function AudioBed() {
         audio.pause();
         level = 0;
         audio.volume = 0;
-        publishAudio(false, false, 0, 0);
+        blocked = false;
+        publishAudio(false, false, true, 0, audio.currentTime, 0);
         return;
       }
-      const target = scrollStore.smoothed * duration;
-      if (Number.isFinite(target) && target >= 0 && target < duration) {
-        audio.currentTime = target;
-      }
-      const started = audio.play();
-      if (started && typeof started.then === "function") {
-        started
-          .then(() => publishAudio(true, false, LEVEL, audio.currentTime))
-          .catch(() => publishAudio(true, true, 0, audio.currentTime));
-      }
+      // Position exactly at the picture's current position before playing, so
+      // switching the bed on mid-scroll starts it in the right place rather than
+      // at zero. This is the difference between "on" and "audibly wrong".
+      setTime(scrollStore.smoothed * duration);
+      start();
     });
 
     function publishAudio(
       enabled: boolean,
-      blocked: boolean,
+      wasBlocked: boolean,
+      paused: boolean,
       volume: number,
-      at: number
+      at: number,
+      pictureTime: number
     ) {
       publish({
         soundEnabled: enabled,
-        soundBlocked: blocked,
-        soundPaused: audio.paused,
+        soundBlocked: wasBlocked,
+        soundPaused: paused,
         soundVolume: volume,
         soundTime: at,
+        soundPictureTime: pictureTime,
       });
     }
 

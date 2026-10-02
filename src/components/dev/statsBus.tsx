@@ -66,6 +66,15 @@ export type VideoStats = {
   soundPaused: boolean;
   soundVolume: number;
   soundTime: number;
+  /**
+   * Where the picture is, in seconds.
+   *
+   * Published next to `soundTime` so the two can be compared directly. A bed
+   * that is playing but sitting four seconds away from the picture is the exact
+   * failure that shipped and was invisible until these two numbers were printed
+   * side by side.
+   */
+  soundPictureTime: number;
 };
 
 const stats: VideoStats = {
@@ -86,6 +95,7 @@ const stats: VideoStats = {
   soundPaused: true,
   soundVolume: 0,
   soundTime: 0,
+  soundPictureTime: 0,
 };
 
 const listeners = new Set<(value: VideoStats) => void>();

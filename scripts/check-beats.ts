@@ -587,21 +587,38 @@ const audioCode = audioSource
   .replace(/^[ \t]*\/\/.*$/gm, "");
 
 check(
-  "the bed is settled from the first frame, not gated shut",
-  /lastMoveAt\s*=\s*Number\.NEGATIVE_INFINITY/.test(audioCode),
-  "a gate that starts closed means no sound until the reader happens to scroll"
+  "the bed has no settle gate at all",
+  !/settling/.test(audioCode) && !/settleTimer/.test(audioCode) && !/SETTLE_MS/.test(audioCode),
+  "the bed must track the picture continuously. Gating it behind 'scrolling has " +
+    "stopped' is what made it desynchronise: it only ever re-positioned on the " +
+    "branch taken when audio was PAUSED, so while it played it never tracked the " +
+    "scroll. The panel read video 5.29s / sound 0.00s while reporting 'playing'."
 );
 
 check(
-  "the bed has no boolean settle flag to get stuck",
-  !/let\s+settling\s*=/.test(audioCode) && !/settleTimer/.test(audioCode),
-  "the settle gate must be derived from a timestamp, not a flag cleared by a timer"
+  "the bed is slaved to the picture on BOTH branches, not only when paused",
+  /seekToward\(/.test(audioCode) &&
+    /moving[\s\S]{0,400}seekToward/.test(audioCode) &&
+    /else\s*\{[\s\S]{0,400}setTime\(target\)/.test(audioCode),
+  "the playhead must follow the picture while playing as well as while paused"
 );
 
 check(
   "play() is called from inside the toggle's user gesture",
   /soundStore\.subscribe\(/.test(audioCode) && /audio\.play\(\)/.test(audioCode),
   "play() from a rAF callback can be refused by autoplay policy"
+);
+
+check(
+  "the toggle seeks before it plays, so it starts in the right place",
+  /setTime\(scrollStore\.smoothed/.test(audioCode),
+  "switching the bed on mid-scroll must not start it at zero"
+);
+
+check(
+  "scrubbing slides the playhead rather than jumping it",
+  /Math\.sign\(delta\)\s*\*\s*limit/.test(audioCode),
+  "a hard currentTime assignment per frame is a discontinuity and clicks"
 );
 
 check(
