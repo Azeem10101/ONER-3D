@@ -53,6 +53,19 @@ export type VideoStats = {
   frames: number;
   /** True once the play/pause prime has run. */
   primed: boolean;
+
+  // --- The ambient bed ---
+  //
+  // Reported because sound that is silently not playing is indistinguishable
+  // from sound that is playing too quietly, and the second version is a bug in
+  // the mix while the first is a bug in the code. `soundBlocked` separates them:
+  // it is set when a play() promise rejects, which is what autoplay policy
+  // actually looks like from inside the page.
+  soundEnabled: boolean;
+  soundBlocked: boolean;
+  soundPaused: boolean;
+  soundVolume: number;
+  soundTime: number;
 };
 
 const stats: VideoStats = {
@@ -68,6 +81,11 @@ const stats: VideoStats = {
   duration: 0,
   frames: 0,
   primed: false,
+  soundEnabled: false,
+  soundBlocked: false,
+  soundPaused: true,
+  soundVolume: 0,
+  soundTime: 0,
 };
 
 const listeners = new Set<(value: VideoStats) => void>();

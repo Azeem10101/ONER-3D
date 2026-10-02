@@ -205,5 +205,28 @@ export function progressAt(seconds: number): number {
   return seconds / VIDEO_DURATION;
 }
 
-/** Total scrollable height of the experience, in vh. */
-export const TOTAL_VH = 1500;
+/**
+ * Total scrollable height of the experience, in vh.
+ *
+ * ## This is the smoothness dial, and it was set wrong
+ *
+ * The background is a scrubbed video, so the size of each visible step is set by
+ * how much scroll one video frame is spread across:
+ *
+ *     pixels per frame = (TOTAL_VH * viewportHeight) / frameCount
+ *
+ * At 1500vh with 596 frames and a ~1400px viewport that is ~35px of scroll per
+ * video frame. A single mouse-wheel notch is roughly 100px, so **every wheel
+ * click skipped about three video frames at once.** Nothing was dropping frames —
+ * the diagnostics panel read `lag 0.0ms`, `readyState 4`, and the scrub was
+ * keeping up perfectly — the motion was simply quantised into 100px jumps.
+ *
+ * That is why it read as "chopped" while every measurement said it was working.
+ * The fix is not a better decoder or a higher frame rate; it is giving each frame
+ * more room. At 2600vh a wheel notch moves ~1.7 frames instead of three.
+ *
+ * The trade is honest and worth stating: a longer page is more scrolling for the
+ * same ten seconds of footage. This is the knob to turn if it still feels steppy
+ * — smoothness is linear in this number, and page length is the only cost.
+ */
+export const TOTAL_VH = 2600;

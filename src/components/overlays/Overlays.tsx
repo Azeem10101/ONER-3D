@@ -1,14 +1,9 @@
 "use client";
 
 import { useEffect, useRef } from "react";
-import { BEATS, EPILOGUE, TOTAL_VH, VIDEO_DURATION, beatAt, beatIndexAt, beatVisibility, progressAt } from "@/scene/beats";
+import { BEATS, EPILOGUE, TOTAL_VH, VIDEO_DURATION, beatAt, beatVisibility, progressAt } from "@/scene/beats";
 import { scrollStore } from "@/lib/scrollStore";
-
-/**
- * Overlay damping, tuned slightly snappier than the video so the text feels
- * attached to the scroll rather than trailing the footage.
- */
-const LAG = 0.2;
+import { SoundToggle } from "./SoundToggle";
 
 /** Pixels a block travels as it fades in. */
 const SHIFT = 22;
@@ -46,17 +41,22 @@ export function Overlays() {
 
   useEffect(() => {
     let frame = 0;
-    let progress = 0;
 
     const reduceMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
 
     function tick() {
-      const target = scrollStore.target;
-      progress += (target - progress) * (reduceMotion ? 1 : LAG);
-      if (Math.abs(target - progress) < 0.0001) progress = target;
+      // Reads the store's ALREADY-damped value rather than damping a second,
+      // private copy of the scroll.
+      //
+      // These two used to run independent exponential smoothers — the video at
+      // 0.16 and this one at 0.2 — so the text was always chasing a different
+      // number than the picture and arrived slightly ahead of it. Two smoothers
+      // over one input is one smoother too many. <VideoLayer> steps the store
+      // once per frame and this reads the result, which is why the type and the
+      // footage are now locked together.
+      const progress = reduceMotion ? scrollStore.target : scrollStore.smoothed;
 
       // --- Beat text ---------------------------------------------------------
-      const active = beatIndexAt(progress);
       for (let i = 0; i < blocks.current.length; i++) {
         const element = blocks.current[i];
         if (!element) continue;
@@ -100,7 +100,6 @@ export function Overlays() {
         outro.current.style.pointerEvents = eased > 0.85 ? "auto" : "none";
       }
 
-      void active;
       frame = requestAnimationFrame(tick);
     }
 
@@ -188,9 +187,12 @@ export function Overlays() {
 
       <div className="pointer-events-none fixed inset-x-0 top-0 z-20 flex items-center justify-between gap-4 bg-gradient-to-b from-black/45 to-transparent px-6 py-5 sm:px-10">
         <span className="hud-label text-white/85">ONER</span>
-        <span ref={hudLabel} className="hud-label truncate text-right">
-          {BEATS[0].label}
-        </span>
+        <div className="flex items-center gap-4">
+          <SoundToggle />
+          <span ref={hudLabel} className="hud-label truncate text-right">
+            {BEATS[0].label}
+          </span>
+        </div>
       </div>
 
       <div aria-hidden className="progress-rail z-20">

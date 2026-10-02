@@ -100,6 +100,27 @@ export function Diagnostics() {
 
             <dt className="text-white/40">Seek mode</dt>
             <dd>exact (never fastSeek)</dd>
+
+            <dt className="text-white/40">Sound</dt>
+            <dd>
+              <span
+                style={{
+                  color: stats.soundBlocked ? "#fca5a5" : undefined,
+                }}
+              >
+                {stats.soundBlocked
+                  ? "BLOCKED by autoplay policy"
+                  : !stats.soundEnabled
+                    ? "off"
+                    : stats.soundPaused
+                      ? "on, muted while scrolling"
+                      : "playing"}
+              </span>
+              <span className="text-white/40">
+                {" "}
+                vol {stats.soundVolume.toFixed(2)} @ {stats.soundTime.toFixed(2)}s
+              </span>
+            </dd>
           </dl>
         </div>
       </div>

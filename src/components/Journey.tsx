@@ -2,6 +2,7 @@
 
 import { ScrollProvider } from "./scroll/ScrollProvider";
 import { VideoLayer } from "./video/VideoLayer";
+import { AudioBed } from "./video/AudioBed";
 import { Overlays } from "./overlays/Overlays";
 import { Diagnostics } from "./dev/Diagnostics";
 
@@ -31,6 +32,9 @@ export function Journey() {
   return (
     <ScrollProvider>
       <VideoLayer />
+      {/* The ambient bed. Silent until the reader asks for it, and silent again
+          whenever the scroll is moving — see AudioBed for why. */}
+      <AudioBed />
       <Overlays />
       {/* Dev-only, and tree-shaken out of production builds. */}
       <Diagnostics />

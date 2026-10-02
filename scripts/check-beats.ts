@@ -38,6 +38,7 @@ import {
   EPILOGUE,
   TOTAL_VH,
   VIDEO_DURATION,
+  VIDEO_FPS,
   beatIndexAt,
   progressAt,
   timeAt,
@@ -84,6 +85,38 @@ check(
   existsSync(posterPath),
   `expected at ${posterPath}`
 );
+
+// --- The ambient bed --------------------------------------------------------
+//
+// Extracted from the source footage's own audio track, which measures -20.9
+// LUFS integrated and -3.1 dBFS true peak: a clean documentary mix with ample
+// headroom, so it is worth keeping at full quality rather than re-encoding.
+//
+// It lives in its own file rather than in the video's audio track, because the
+// video element is muted and never played — there is no continuous playback for
+// an audio track to ride along with. A separate <audio> element is driven by the
+// scroll instead.
+const audioPath = resolve(process.cwd(), "public/media/ambient.m4a");
+check("public/media/ambient.m4a exists", existsSync(audioPath), `expected at ${audioPath}`);
+
+if (existsSync(audioPath)) {
+  const audioBytes = statSync(audioPath).size;
+  check(
+    "the ambient bed is small enough to not matter",
+    audioBytes < 512 * 1024,
+    `${(audioBytes / 1024).toFixed(0)} KB`
+  );
+  // An m4a carries its own moov, and the bed has to be playable the instant the
+  // reader hits the toggle. A moov at the end means a round trip first.
+  const audioHead = readFileSync(audioPath).subarray(0, 4096).toString("latin1");
+  check(
+    "the audio is faststart, so the toggle is instant",
+    audioHead.indexOf("moov") >= 0 && audioHead.indexOf("moov") < audioHead.indexOf("mdat"),
+    audioHead.indexOf("moov") < 0
+      ? "no moov in the first 4KB"
+      : "moov appears after mdat"
+  );
+}
 
 // --- The declared duration matches the file ---------------------------------
 //
@@ -361,11 +394,43 @@ check(
 );
 
 const viewportSeconds = (100 / TOTAL_VH) * VIDEO_DURATION;
+
+// Scroll step per video frame, in pixels, at a reference viewport.
+//
+// This is the number that decides whether scrubbing reads as smooth or as
+// chopped, and it is not a property of the decoder at all. It is the
+// distribution of 596 frames across however many pixels the reader has to
+// scroll through. A mouse wheel notch is ~100px, so `framesPerNotch` is how many
+// video frames the picture jumps by on a single click.
+//
+// TOTAL_VH is in units of 1vh, and 1vh is ONE PERCENT of the viewport, so the
+// total scrollable distance is TOTAL_VH/100 viewports. The first version of this
+// omitted that /100 and reported 6107px per frame, which would have meant the
+// smoothness dial was a hundred times less effective than it is.
+const REF_VIEWPORT_PX = 1400;
+const totalScrollPx = (TOTAL_VH / 100) * REF_VIEWPORT_PX;
+const frameCount = Math.round(VIDEO_DURATION * VIDEO_FPS);
+const pxPerFrame = totalScrollPx / frameCount;
+const framesPerNotch = 100 / pxPerFrame;
+
 console.log(
   `\n  ${TOTAL_VH}vh of scroll for ${VIDEO_DURATION.toFixed(2)}s of footage:` +
     `\n    one screen scrolled = ${viewportSeconds.toFixed(2)}s of video` +
     `\n    one beat = ${((BEATS[0].end - BEATS[0].start) / VIDEO_DURATION * TOTAL_VH).toFixed(0)}vh` +
-    ` at the shortest`
+    ` at the shortest` +
+    `\n    ${Math.round(totalScrollPx)}px of scroll total, ${pxPerFrame.toFixed(0)}px per video frame` +
+    `\n    a 100px wheel notch moves ${framesPerNotch.toFixed(1)} frames`
+);
+
+// Above about 2.5 frames per notch the picture visibly skips. This is a much
+// more useful place to catch a regression than a frame-time measurement, because
+// a perfectly healthy scrub can still step this coarsely.
+check(
+  "a wheel notch does not skip more than about 2.5 video frames",
+  framesPerNotch <= 2.5,
+  `a notch moves ${framesPerNotch.toFixed(1)} frames at ${TOTAL_VH}vh — ` +
+    `raise TOTAL_VH in beats.ts. Smoothness is linear in that number, and page ` +
+    `length is the only thing it costs.`
 );
 
 // --- Every beat resolves to itself -------------------------------------------
@@ -500,6 +565,56 @@ check(
   "fastSeek is genuinely not called, not merely mentioned",
   !/fastSeek/.test(code),
   "fastSeek lands on the nearest keyframe, which was 3.3s away in the source"
+);
+
+// --- The ambient bed's gate --------------------------------------------------
+//
+// The bed used to be gated on a boolean `settling` that was initialised to true
+// and cleared only by a timer armed inside the "the scroll is moving" branch.
+// On a page that was opened and never scrolled — which is exactly what happens
+// when someone clicks the sound toggle straight away — that branch never ran,
+// `settling` stayed true forever, and the `else if (settling)` arm muted the bed
+// on every frame. Sound only appeared if you happened to scroll first.
+//
+// The gate is now derived from a timestamp of the last movement, initialised to
+// negative infinity so the bed counts as settled from the very first frame.
+const audioSource = readFileSync(
+  resolve(process.cwd(), "src/components/video/AudioBed.tsx"),
+  "utf8"
+);
+const audioCode = audioSource
+  .replace(/\/\*[\s\S]*?\*\//g, "")
+  .replace(/^[ \t]*\/\/.*$/gm, "");
+
+check(
+  "the bed is settled from the first frame, not gated shut",
+  /lastMoveAt\s*=\s*Number\.NEGATIVE_INFINITY/.test(audioCode),
+  "a gate that starts closed means no sound until the reader happens to scroll"
+);
+
+check(
+  "the bed has no boolean settle flag to get stuck",
+  !/let\s+settling\s*=/.test(audioCode) && !/settleTimer/.test(audioCode),
+  "the settle gate must be derived from a timestamp, not a flag cleared by a timer"
+);
+
+check(
+  "play() is called from inside the toggle's user gesture",
+  /soundStore\.subscribe\(/.test(audioCode) && /audio\.play\(\)/.test(audioCode),
+  "play() from a rAF callback can be refused by autoplay policy"
+);
+
+check(
+  "the bed never calls scrollStore.step()",
+  !/scrollStore\.step\(/.test(audioCode),
+  "step(0) SNAPS progress to target and would strip out all damping; only the " +
+    "video layer may advance the store"
+);
+
+check(
+  "the bed is not looped",
+  !/\bloop\b/.test(audioCode),
+  "looping the ambient bed would desynchronise it from the picture"
 );
 
 console.log();
